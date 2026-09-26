@@ -10,7 +10,8 @@ pub const TRANSFER_VERSION: u8 = 6;
 pub const CALL_VERSION: u8 = 7;
 pub const MUTABLE_VERSION: u8 = 8;
 pub const REPEAT_VERSION: u8 = 9;
-pub const VERSION: u8 = 10;
+pub const FAILURE_VERSION: u8 = 10;
+pub const VERSION: u8 = 11;
 pub const MAX_FUNCTIONS: usize = 1024;
 pub const MAX_PARAMETERS: usize = 64;
 pub const MAX_NAME_BYTES: usize = 255;
@@ -87,6 +88,11 @@ pub enum Statement {
         field: u16,
         expression: Vec<Instruction>,
     },
+    MapStore {
+        map: u16,
+        keys: Vec<Vec<Instruction>>,
+        expression: Vec<Instruction>,
+    },
     Emit {
         event: u16,
         values: Vec<Vec<Instruction>>,
@@ -113,6 +119,7 @@ pub enum Instruction {
     Parameter(u16),
     Local(u16),
     Storage(u16),
+    MapStorage(u16),
     MessageSender,
     MessageValue,
     BlockHeight,
@@ -124,6 +131,9 @@ pub enum Instruction {
     DivU64,
     Eq,
     LtU64,
+    AddU256,
+    SubU256,
+    GteU256,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,6 +151,13 @@ pub struct StorageField {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapField {
+    pub name: String,
+    pub key_types: Vec<ValueType>,
+    pub value_type: ValueType,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventDefinition {
     pub name: String,
     pub fields: Vec<StorageField>,
@@ -149,15 +166,25 @@ pub struct EventDefinition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     pub storage: Vec<StorageField>,
+    pub maps: Vec<MapField>,
     pub events: Vec<EventDefinition>,
     pub functions: Vec<Function>,
+}
+
+#[derive(Clone, Copy)]
+struct ValidationSchema<'a> {
+    storage: &'a [StorageField],
+    maps: &'a [MapField],
+    events: &'a [EventDefinition],
 }
 
 impl Program {
     pub fn encode(&self) -> Result<Vec<u8>> {
         validate_storage(&self.storage)?;
+        validate_maps(&self.maps)?;
+        validate_storage_layout(&self.storage, &self.maps)?;
         validate_events(&self.events)?;
-        validate_functions(&self.functions, &self.storage, &self.events)?;
+        validate_functions(&self.functions, &self.storage, &self.maps, &self.events)?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC);
         bytes.push(VERSION);
@@ -166,6 +193,13 @@ impl Program {
             push_u16(&mut bytes, field.name.len())?;
             bytes.extend_from_slice(field.name.as_bytes());
             bytes.push(field.value_type as u8);
+        }
+        push_u16(&mut bytes, self.maps.len())?;
+        for map in &self.maps {
+            push_name(&mut bytes, &map.name)?;
+            push_u16(&mut bytes, map.key_types.len())?;
+            bytes.extend(map.key_types.iter().map(|value| *value as u8));
+            bytes.push(map.value_type as u8);
         }
         push_u16(&mut bytes, self.events.len())?;
         for event in &self.events {
@@ -237,6 +271,34 @@ pub fn parse(bytes: &[u8]) -> Result<Program> {
     } else {
         Vec::new()
     };
+    let maps = if version >= VERSION {
+        let map_count = reader.u16()? as usize;
+        if map_count > MAX_STORAGE_FIELDS {
+            bail!("too many LithoVM map fields: {map_count}");
+        }
+        let mut maps = Vec::with_capacity(map_count);
+        for _ in 0..map_count {
+            let name = read_name(&mut reader, "map")?;
+            let key_count = reader.u16()? as usize;
+            if key_count == 0 || key_count > MAX_PARAMETERS {
+                bail!("invalid LithoVM map key count {key_count}");
+            }
+            let mut key_types = Vec::with_capacity(key_count);
+            for _ in 0..key_count {
+                key_types.push(ValueType::from_byte(reader.byte()?)?);
+            }
+            maps.push(MapField {
+                name,
+                key_types,
+                value_type: ValueType::from_byte(reader.byte()?)?,
+            });
+        }
+        validate_maps(&maps)?;
+        validate_storage_layout(&storage, &maps)?;
+        maps
+    } else {
+        Vec::new()
+    };
     let events = if version >= EVENT_VERSION {
         let event_count = reader.u16()? as usize;
         if event_count > MAX_EVENTS {
@@ -262,6 +324,11 @@ pub fn parse(bytes: &[u8]) -> Result<Program> {
         events
     } else {
         Vec::new()
+    };
+    let schema = ValidationSchema {
+        storage: &storage,
+        maps: &maps,
+        events: &events,
     };
     let function_count = reader.u16()? as usize;
     if function_count == 0 || function_count > MAX_FUNCTIONS {
@@ -315,20 +382,13 @@ pub fn parse(bytes: &[u8]) -> Result<Program> {
                 for _ in 0..instruction_count {
                     instructions.push(decode_instruction(&mut reader, version)?);
                 }
-                validate_expression(&instructions, &parameters, &[], &storage, return_type)?;
+                validate_expression(&instructions, &parameters, &[], &schema, return_type)?;
                 ReturnValue::Expression(instructions)
             }
             4 if version >= STATEMENT_VERSION => {
                 let statements = decode_statements(&mut reader, version, 0)?;
-                let terminal = validate_statements(
-                    &statements,
-                    &parameters,
-                    return_type,
-                    &[],
-                    &storage,
-                    &events,
-                    0,
-                )?;
+                let terminal =
+                    validate_statements(&statements, &parameters, return_type, &[], &schema, 0)?;
                 if !terminal {
                     bail!("function does not return on every path");
                 }
@@ -346,9 +406,10 @@ pub fn parse(bytes: &[u8]) -> Result<Program> {
     if reader.position != bytes.len() {
         bail!("trailing bytes after LithoVM program");
     }
-    validate_functions(&functions, &storage, &events)?;
+    validate_functions(&functions, &storage, &maps, &events)?;
     Ok(Program {
         storage,
+        maps,
         events,
         functions,
     })
@@ -387,6 +448,34 @@ fn validate_storage(storage: &[StorageField]) -> Result<()> {
     Ok(())
 }
 
+fn validate_maps(maps: &[MapField]) -> Result<()> {
+    if maps.len() > MAX_STORAGE_FIELDS {
+        bail!("program exceeds {MAX_STORAGE_FIELDS} map fields");
+    }
+    for (index, map) in maps.iter().enumerate() {
+        validate_name(&map.name, "map")?;
+        if maps[..index].iter().any(|earlier| earlier.name == map.name) {
+            bail!("duplicate LithoVM map field name '{}'", map.name);
+        }
+        if map.key_types.is_empty() || map.key_types.len() > MAX_PARAMETERS {
+            bail!("map '{}' has an invalid key count", map.name);
+        }
+    }
+    Ok(())
+}
+
+fn validate_storage_layout(storage: &[StorageField], maps: &[MapField]) -> Result<()> {
+    if storage.len().saturating_add(maps.len()) > MAX_STORAGE_FIELDS {
+        bail!("program exceeds {MAX_STORAGE_FIELDS} total storage fields");
+    }
+    for map in maps {
+        if storage.iter().any(|field| field.name == map.name) {
+            bail!("storage name '{}' is used by a scalar and a map", map.name);
+        }
+    }
+    Ok(())
+}
+
 fn validate_events(events: &[EventDefinition]) -> Result<()> {
     if events.len() > MAX_EVENTS {
         bail!("program exceeds {MAX_EVENTS} events");
@@ -418,8 +507,14 @@ fn validate_events(events: &[EventDefinition]) -> Result<()> {
 fn validate_functions(
     functions: &[Function],
     storage: &[StorageField],
+    maps: &[MapField],
     events: &[EventDefinition],
 ) -> Result<()> {
+    let schema = ValidationSchema {
+        storage,
+        maps,
+        events,
+    };
     if functions.is_empty() || functions.len() > MAX_FUNCTIONS {
         bail!("program must contain between 1 and {MAX_FUNCTIONS} functions");
     }
@@ -456,7 +551,7 @@ fn validate_functions(
                     instructions,
                     &function.parameters,
                     &[],
-                    storage,
+                    &schema,
                     function.return_type,
                 )?;
             }
@@ -466,8 +561,7 @@ fn validate_functions(
                     &function.parameters,
                     function.return_type,
                     &[],
-                    storage,
-                    events,
+                    &schema,
                     0,
                 )?;
                 if !terminal {
@@ -533,6 +627,19 @@ fn encode_statements(bytes: &mut Vec<u8>, statements: &[Statement]) -> Result<()
                 bytes.extend_from_slice(&field.to_be_bytes());
                 encode_expression(bytes, expression)?;
             }
+            Statement::MapStore {
+                map,
+                keys,
+                expression,
+            } => {
+                bytes.push(13);
+                bytes.extend_from_slice(&map.to_be_bytes());
+                push_u16(bytes, keys.len())?;
+                for key in keys {
+                    encode_expression(bytes, key)?;
+                }
+                encode_expression(bytes, expression)?;
+            }
             Statement::Emit { event, values } => {
                 bytes.push(5);
                 bytes.extend_from_slice(&event.to_be_bytes());
@@ -590,6 +697,10 @@ fn encode_instruction(bytes: &mut Vec<u8>, instruction: &Instruction) {
             bytes.push(10);
             bytes.extend_from_slice(&index.to_be_bytes());
         }
+        Instruction::MapStorage(index) => {
+            bytes.push(16);
+            bytes.extend_from_slice(&index.to_be_bytes());
+        }
         Instruction::MessageSender => bytes.push(11),
         Instruction::MessageValue => bytes.push(12),
         Instruction::BlockHeight => bytes.push(13),
@@ -601,6 +712,9 @@ fn encode_instruction(bytes: &mut Vec<u8>, instruction: &Instruction) {
         Instruction::DivU64 => bytes.push(6),
         Instruction::Eq => bytes.push(7),
         Instruction::LtU64 => bytes.push(8),
+        Instruction::AddU256 => bytes.push(17),
+        Instruction::SubU256 => bytes.push(18),
+        Instruction::GteU256 => bytes.push(19),
     }
 }
 
@@ -627,6 +741,10 @@ fn decode_instruction(reader: &mut Reader<'_>, version: u8) -> Result<Instructio
         13 if version >= CONTEXT_VERSION => Ok(Instruction::BlockHeight),
         14 if version >= CONTEXT_VERSION => Ok(Instruction::BlockTimestamp),
         15 if version >= CONTEXT_VERSION => Ok(Instruction::ChainId),
+        16 if version >= VERSION => Ok(Instruction::MapStorage(reader.u16()?)),
+        17 if version >= VERSION => Ok(Instruction::AddU256),
+        18 if version >= VERSION => Ok(Instruction::SubU256),
+        19 if version >= VERSION => Ok(Instruction::GteU256),
         opcode => bail!("unknown LithoVM instruction opcode {opcode}"),
     }
 }
@@ -670,8 +788,10 @@ fn decode_statements(reader: &mut Reader<'_>, version: u8, depth: usize) -> Resu
                 count: decode_expression(reader, version)?,
                 body: decode_statements(reader, version, depth + 1)?,
             },
-            11 if version >= VERSION => Statement::Require(decode_expression(reader, version)?),
-            12 if version >= VERSION => Statement::Revert,
+            11 if version >= FAILURE_VERSION => {
+                Statement::Require(decode_expression(reader, version)?)
+            }
+            12 if version >= FAILURE_VERSION => Statement::Revert,
             2 => Statement::Return(decode_expression(reader, version)?),
             3 => Statement::If {
                 condition: decode_expression(reader, version)?,
@@ -682,6 +802,22 @@ fn decode_statements(reader: &mut Reader<'_>, version: u8, depth: usize) -> Resu
                 field: reader.u16()?,
                 expression: decode_expression(reader, version)?,
             },
+            13 if version >= VERSION => {
+                let map = reader.u16()?;
+                let key_count = reader.u16()? as usize;
+                if key_count == 0 || key_count > MAX_PARAMETERS {
+                    bail!("invalid map key count {key_count}");
+                }
+                let mut keys = Vec::with_capacity(key_count);
+                for _ in 0..key_count {
+                    keys.push(decode_expression(reader, version)?);
+                }
+                Statement::MapStore {
+                    map,
+                    keys,
+                    expression: decode_expression(reader, version)?,
+                }
+            }
             5 if version >= EVENT_VERSION => {
                 let event = reader.u16()?;
                 let count = reader.u16()? as usize;
@@ -713,7 +849,7 @@ fn validate_expression(
     instructions: &[Instruction],
     parameters: &[ValueType],
     locals: &[ValueType],
-    storage: &[StorageField],
+    schema: &ValidationSchema<'_>,
     return_type: ValueType,
 ) -> Result<()> {
     if instructions.is_empty() || instructions.len() > MAX_INSTRUCTIONS {
@@ -737,11 +873,22 @@ fn validate_expression(
                     .ok_or_else(|| anyhow!("expression local index {index} is out of range"))?,
             ),
             Instruction::Storage(index) => stack.push(
-                storage
+                schema
+                    .storage
                     .get(*index as usize)
                     .ok_or_else(|| anyhow!("expression storage index {index} is out of range"))?
                     .value_type,
             ),
+            Instruction::MapStorage(index) => {
+                let map = schema
+                    .maps
+                    .get(*index as usize)
+                    .ok_or_else(|| anyhow!("expression map index {index} is out of range"))?;
+                for key_type in map.key_types.iter().rev() {
+                    pop_expected(&mut stack, *key_type)?;
+                }
+                stack.push(map.value_type);
+            }
             Instruction::MessageSender => stack.push(ValueType::Address),
             Instruction::MessageValue => stack.push(ValueType::U256),
             Instruction::BlockHeight | Instruction::BlockTimestamp | Instruction::ChainId => {
@@ -772,6 +919,16 @@ fn validate_expression(
                 pop_expected(&mut stack, ValueType::U64)?;
                 stack.push(ValueType::Bool);
             }
+            Instruction::AddU256 | Instruction::SubU256 => {
+                pop_expected(&mut stack, ValueType::U256)?;
+                pop_expected(&mut stack, ValueType::U256)?;
+                stack.push(ValueType::U256);
+            }
+            Instruction::GteU256 => {
+                pop_expected(&mut stack, ValueType::U256)?;
+                pop_expected(&mut stack, ValueType::U256)?;
+                stack.push(ValueType::Bool);
+            }
         }
     }
     if stack.as_slice() != [return_type] {
@@ -785,8 +942,7 @@ fn validate_statements(
     parameters: &[ValueType],
     return_type: ValueType,
     inherited_locals: &[(ValueType, bool)],
-    storage: &[StorageField],
-    events: &[EventDefinition],
+    schema: &ValidationSchema<'_>,
     depth: usize,
 ) -> Result<bool> {
     if depth > MAX_BLOCK_DEPTH {
@@ -806,7 +962,7 @@ fn validate_statements(
                 value_type,
                 expression,
             } => {
-                validate_expression(expression, parameters, &locals, storage, *value_type)?;
+                validate_expression(expression, parameters, &locals, schema, *value_type)?;
                 if locals.len() >= MAX_LOCALS {
                     bail!("function exceeds {MAX_LOCALS} local bindings");
                 }
@@ -817,7 +973,7 @@ fn validate_statements(
                 value_type,
                 expression,
             } => {
-                validate_expression(expression, parameters, &locals, storage, *value_type)?;
+                validate_expression(expression, parameters, &locals, schema, *value_type)?;
                 if locals.len() >= MAX_LOCALS {
                     bail!("function exceeds {MAX_LOCALS} local bindings");
                 }
@@ -832,42 +988,59 @@ fn validate_statements(
                 if !mutable[index] {
                     bail!("local assignment targets an immutable binding");
                 }
-                validate_expression(expression, parameters, &locals, storage, value_type)?;
+                validate_expression(expression, parameters, &locals, schema, value_type)?;
             }
             Statement::Repeat { count, body } => {
-                validate_expression(count, parameters, &locals, storage, ValueType::U64)?;
+                validate_expression(count, parameters, &locals, schema, ValueType::U64)?;
                 let bindings = locals
                     .iter()
                     .copied()
                     .zip(mutable.iter().copied())
                     .collect::<Vec<_>>();
-                validate_statements(
-                    body,
-                    parameters,
-                    return_type,
-                    &bindings,
-                    storage,
-                    events,
-                    depth + 1,
-                )?;
+                validate_statements(body, parameters, return_type, &bindings, schema, depth + 1)?;
             }
             Statement::Require(condition) => {
-                validate_expression(condition, parameters, &locals, storage, ValueType::Bool)?;
+                validate_expression(condition, parameters, &locals, schema, ValueType::Bool)?;
             }
             Statement::Revert => terminal = true,
             Statement::Return(expression) => {
-                validate_expression(expression, parameters, &locals, storage, return_type)?;
+                validate_expression(expression, parameters, &locals, schema, return_type)?;
                 terminal = true;
             }
             Statement::Store { field, expression } => {
-                let value_type = storage
+                let value_type = schema
+                    .storage
                     .get(*field as usize)
                     .ok_or_else(|| anyhow!("store field index {field} is out of range"))?
                     .value_type;
-                validate_expression(expression, parameters, &locals, storage, value_type)?;
+                validate_expression(expression, parameters, &locals, schema, value_type)?;
+            }
+            Statement::MapStore {
+                map,
+                keys,
+                expression,
+            } => {
+                let definition = schema
+                    .maps
+                    .get(*map as usize)
+                    .ok_or_else(|| anyhow!("map store index {map} is out of range"))?;
+                if keys.len() != definition.key_types.len() {
+                    bail!("map store key count does not match schema");
+                }
+                for (key, key_type) in keys.iter().zip(&definition.key_types) {
+                    validate_expression(key, parameters, &locals, schema, *key_type)?;
+                }
+                validate_expression(
+                    expression,
+                    parameters,
+                    &locals,
+                    schema,
+                    definition.value_type,
+                )?;
             }
             Statement::Emit { event, values } => {
-                let definition = events
+                let definition = schema
+                    .events
                     .get(*event as usize)
                     .ok_or_else(|| anyhow!("event index {event} is out of range"))?;
                 if values.len() != definition.fields.len() {
@@ -877,28 +1050,28 @@ fn validate_statements(
                     );
                 }
                 for (value, field) in values.iter().zip(&definition.fields) {
-                    validate_expression(value, parameters, &locals, storage, field.value_type)?;
+                    validate_expression(value, parameters, &locals, schema, field.value_type)?;
                 }
             }
             Statement::Transfer { recipient, amount } => {
-                validate_expression(recipient, parameters, &locals, storage, ValueType::Address)?;
-                validate_expression(amount, parameters, &locals, storage, ValueType::U256)?;
+                validate_expression(recipient, parameters, &locals, schema, ValueType::Address)?;
+                validate_expression(amount, parameters, &locals, schema, ValueType::U256)?;
             }
             Statement::Call {
                 target,
                 selector,
                 value,
             } => {
-                validate_expression(target, parameters, &locals, storage, ValueType::Address)?;
-                validate_expression(selector, parameters, &locals, storage, ValueType::Bytes32)?;
-                validate_expression(value, parameters, &locals, storage, ValueType::U256)?;
+                validate_expression(target, parameters, &locals, schema, ValueType::Address)?;
+                validate_expression(selector, parameters, &locals, schema, ValueType::Bytes32)?;
+                validate_expression(value, parameters, &locals, schema, ValueType::U256)?;
             }
             Statement::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                validate_expression(condition, parameters, &locals, storage, ValueType::Bool)?;
+                validate_expression(condition, parameters, &locals, schema, ValueType::Bool)?;
                 let bindings = locals
                     .iter()
                     .copied()
@@ -909,8 +1082,7 @@ fn validate_statements(
                     parameters,
                     return_type,
                     &bindings,
-                    storage,
-                    events,
+                    schema,
                     depth + 1,
                 )?;
                 let else_terminal = validate_statements(
@@ -918,8 +1090,7 @@ fn validate_statements(
                     parameters,
                     return_type,
                     &bindings,
-                    storage,
-                    events,
+                    schema,
                     depth + 1,
                 )?;
                 terminal = then_terminal && else_terminal;
@@ -1019,6 +1190,7 @@ mod tests {
     fn sample() -> Program {
         Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "answer".into(),
@@ -1033,11 +1205,24 @@ mod tests {
         }
     }
 
-    fn strip_empty_event_table(mut bytes: Vec<u8>, storage: &[StorageField]) -> Vec<u8> {
+    fn storage_table_end(storage: &[StorageField]) -> usize {
         let mut offset = MAGIC.len() + 1 + 2;
         for field in storage {
             offset += 2 + field.name.len() + 1;
         }
+        offset
+    }
+
+    fn strip_empty_map_table(mut bytes: Vec<u8>, storage: &[StorageField]) -> Vec<u8> {
+        let offset = storage_table_end(storage);
+        assert_eq!(&bytes[offset..offset + 2], &[0, 0]);
+        bytes.drain(offset..offset + 2);
+        bytes
+    }
+
+    fn strip_empty_map_and_event_tables(bytes: Vec<u8>, storage: &[StorageField]) -> Vec<u8> {
+        let mut bytes = strip_empty_map_table(bytes, storage);
+        let offset = storage_table_end(storage);
         assert_eq!(&bytes[offset..offset + 2], &[0, 0]);
         bytes.drain(offset..offset + 2);
         bytes
@@ -1076,6 +1261,7 @@ mod tests {
     fn typed_expression_round_trips_and_rejects_bad_stacks() {
         let program = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "add".into(),
@@ -1094,7 +1280,7 @@ mod tests {
         };
         let bytes = program.encode().unwrap();
         assert_eq!(parse(&bytes).unwrap(), program);
-        let mut v3 = strip_empty_event_table(bytes.clone(), &program.storage);
+        let mut v3 = strip_empty_map_and_event_tables(bytes.clone(), &program.storage);
         v3[MAGIC.len()] = STORAGE_VERSION;
         assert_eq!(parse(&v3).unwrap(), program);
 
@@ -1107,6 +1293,7 @@ mod tests {
     fn structured_statements_round_trip_and_validate_local_types() {
         let program = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "choose".into(),
@@ -1152,30 +1339,33 @@ mod tests {
         for version in [LEGACY_VERSION, STATEMENT_VERSION] {
             let mut bytes = sample().encode().unwrap();
             bytes[MAGIC.len()] = version;
-            bytes.drain(MAGIC.len() + 1..MAGIC.len() + 5);
+            bytes.drain(MAGIC.len() + 1..MAGIC.len() + 7);
             assert_eq!(parse(&bytes).unwrap(), sample());
         }
 
         for version in [STORAGE_VERSION, CONTEXT_VERSION] {
-            let mut bytes = strip_empty_event_table(sample().encode().unwrap(), &[]);
+            let mut bytes = strip_empty_map_and_event_tables(sample().encode().unwrap(), &[]);
             bytes[MAGIC.len()] = version;
             assert_eq!(parse(&bytes).unwrap(), sample());
         }
-        let mut v5 = sample().encode().unwrap();
+        let mut v5 = strip_empty_map_table(sample().encode().unwrap(), &[]);
         v5[MAGIC.len()] = EVENT_VERSION;
         assert_eq!(parse(&v5).unwrap(), sample());
-        let mut v6 = sample().encode().unwrap();
+        let mut v6 = strip_empty_map_table(sample().encode().unwrap(), &[]);
         v6[MAGIC.len()] = TRANSFER_VERSION;
         assert_eq!(parse(&v6).unwrap(), sample());
-        let mut v7 = sample().encode().unwrap();
+        let mut v7 = strip_empty_map_table(sample().encode().unwrap(), &[]);
         v7[MAGIC.len()] = CALL_VERSION;
         assert_eq!(parse(&v7).unwrap(), sample());
-        let mut v8 = sample().encode().unwrap();
+        let mut v8 = strip_empty_map_table(sample().encode().unwrap(), &[]);
         v8[MAGIC.len()] = MUTABLE_VERSION;
         assert_eq!(parse(&v8).unwrap(), sample());
-        let mut v9 = sample().encode().unwrap();
+        let mut v9 = strip_empty_map_table(sample().encode().unwrap(), &[]);
         v9[MAGIC.len()] = REPEAT_VERSION;
         assert_eq!(parse(&v9).unwrap(), sample());
+        let mut v10 = strip_empty_map_table(sample().encode().unwrap(), &[]);
+        v10[MAGIC.len()] = FAILURE_VERSION;
+        assert_eq!(parse(&v10).unwrap(), sample());
     }
 
     #[test]
@@ -1185,6 +1375,7 @@ mod tests {
                 name: "count".into(),
                 value_type: ValueType::U64,
             }],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "set".into(),
@@ -1201,7 +1392,7 @@ mod tests {
         };
         let bytes = program.encode().unwrap();
         assert_eq!(parse(&bytes).unwrap(), program);
-        let mut storage_v3 = strip_empty_event_table(bytes.clone(), &program.storage);
+        let mut storage_v3 = strip_empty_map_and_event_tables(bytes.clone(), &program.storage);
         storage_v3[MAGIC.len()] = STORAGE_VERSION;
         assert_eq!(parse(&storage_v3).unwrap(), program);
 
@@ -1217,6 +1408,43 @@ mod tests {
     }
 
     #[test]
+    fn typed_map_storage_and_u256_operations_round_trip() {
+        let program = Program {
+            storage: vec![],
+            maps: vec![MapField {
+                name: "balances".into(),
+                key_types: vec![ValueType::Address],
+                value_type: ValueType::U256,
+            }],
+            events: vec![],
+            functions: vec![Function {
+                name: "credit".into(),
+                parameters: vec![ValueType::Address, ValueType::U256],
+                return_type: ValueType::U256,
+                return_value: ReturnValue::Statements(vec![
+                    Statement::MapStore {
+                        map: 0,
+                        keys: vec![vec![Instruction::Parameter(0)]],
+                        expression: vec![
+                            Instruction::Parameter(0),
+                            Instruction::MapStorage(0),
+                            Instruction::Parameter(1),
+                            Instruction::AddU256,
+                        ],
+                    },
+                    Statement::Return(vec![Instruction::Parameter(0), Instruction::MapStorage(0)]),
+                ]),
+            }],
+        };
+        let bytes = program.encode().unwrap();
+        assert_eq!(parse(&bytes).unwrap(), program);
+
+        let mut invalid = program;
+        invalid.maps[0].key_types[0] = ValueType::Bool;
+        assert!(invalid.encode().is_err());
+    }
+
+    #[test]
     fn execution_context_instructions_round_trip_with_static_types() {
         for (instruction, return_type) in [
             (Instruction::MessageSender, ValueType::Address),
@@ -1227,6 +1455,7 @@ mod tests {
         ] {
             let program = Program {
                 storage: vec![],
+                maps: vec![],
                 events: vec![],
                 functions: vec![Function {
                     name: "context".into(),
@@ -1237,7 +1466,7 @@ mod tests {
             };
             let bytes = program.encode().unwrap();
             assert_eq!(parse(&bytes).unwrap(), program);
-            let mut mislabeled_v3 = strip_empty_event_table(bytes, &[]);
+            let mut mislabeled_v3 = strip_empty_map_and_event_tables(bytes, &[]);
             mislabeled_v3[MAGIC.len()] = STORAGE_VERSION;
             assert!(parse(&mislabeled_v3).is_err());
         }
@@ -1247,6 +1476,7 @@ mod tests {
     fn typed_event_schema_and_emission_round_trip() {
         let program = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![EventDefinition {
                 name: "Changed".into(),
                 fields: vec![StorageField {
@@ -1285,6 +1515,7 @@ mod tests {
     fn native_transfer_statement_round_trips_with_static_types() {
         let program = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "pay".into(),
@@ -1310,6 +1541,7 @@ mod tests {
     fn contract_call_statement_round_trips_with_static_types() {
         let program = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "invoke".into(),
@@ -1336,6 +1568,7 @@ mod tests {
     fn mutable_local_statements_round_trip_and_reject_immutable_assignment() {
         let program = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "increment".into(),
@@ -1383,6 +1616,7 @@ mod tests {
     fn repeat_statement_round_trips_and_requires_u64_count() {
         let program = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "count".into(),
@@ -1433,6 +1667,7 @@ mod tests {
     fn failure_statements_round_trip_and_require_bool() {
         let program = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "guarded".into(),

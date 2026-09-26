@@ -28,5 +28,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "stateful_maps"
+path = "fuzz_targets/stateful_maps.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

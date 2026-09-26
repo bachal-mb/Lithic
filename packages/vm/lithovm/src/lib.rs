@@ -100,6 +100,7 @@ pub struct ExecutionContext {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Storage {
     values: BTreeMap<String, [u8; 32]>,
+    maps: BTreeMap<String, BTreeMap<Vec<[u8; 32]>, [u8; 32]>>,
 }
 
 impl Storage {
@@ -110,6 +111,17 @@ impl Storage {
     pub fn set_word(&mut self, field: impl Into<String>, word: [u8; 32]) {
         self.values.insert(field.into(), word);
     }
+
+    pub fn get_map(&self, field: &str, keys: &[[u8; 32]]) -> Option<&[u8; 32]> {
+        self.maps.get(field)?.get(keys)
+    }
+
+    pub fn set_map_word(&mut self, field: impl Into<String>, keys: Vec<[u8; 32]>, word: [u8; 32]) {
+        self.maps
+            .entry(field.into())
+            .or_default()
+            .insert(keys, word);
+    }
 }
 
 pub const BASE_CALL_GAS: u64 = 10;
@@ -117,6 +129,8 @@ pub const PARAMETER_GAS: u64 = 2;
 pub const INSTRUCTION_GAS: u64 = 1;
 pub const NATIVE_TRANSFER_GAS: u64 = 20;
 pub const CONTRACT_CALL_GAS: u64 = 40;
+pub const MAP_READ_GAS: u64 = 25;
+pub const MAP_WRITE_GAS: u64 = 100;
 pub const MAX_CALL_DEPTH: u16 = 32;
 pub const MAX_LOOP_ITERATIONS: u64 = 1024;
 
@@ -314,14 +328,14 @@ fn execute_program(
     for (index, (value_type, word)) in function.parameters.iter().zip(arguments).enumerate() {
         validate_word(*value_type, word).map_err(|error| anyhow!("argument {index}: {error}"))?;
     }
-    let instruction_count = match &function.return_value {
-        ReturnValue::Expression(instructions) => instructions.len() as u64,
+    let expression_cost = match &function.return_value {
+        ReturnValue::Expression(instructions) => expression_gas(instructions),
         ReturnValue::Statements(_) => 0,
         _ => 0,
     };
     let gas_used = BASE_CALL_GAS
         .checked_add(PARAMETER_GAS.saturating_mul(arguments.len() as u64))
-        .and_then(|gas| gas.checked_add(INSTRUCTION_GAS.saturating_mul(instruction_count)))
+        .and_then(|gas| gas.checked_add(expression_cost))
         .ok_or_else(|| anyhow!("gas calculation overflow"))?;
     if gas_limit < gas_used {
         *observed_gas = gas_limit;
@@ -334,6 +348,7 @@ fn execute_program(
     *observed_gas = gas_used;
     let mut environment = RuntimeEnvironment {
         storage_fields: &program.storage,
+        map_fields: &program.maps,
         event_definitions: &program.events,
         storage,
         context,
@@ -420,6 +435,26 @@ fn prepare_storage(program: &Program, storage: &mut Storage) -> Result<()> {
         validate_word(field.value_type, word)
             .map_err(|error| anyhow!("storage field '{}': {error}", field.name))?;
     }
+    for name in storage.maps.keys() {
+        if !program.maps.iter().any(|field| field.name == *name) {
+            bail!("storage contains unknown map field '{name}'");
+        }
+    }
+    for map in &program.maps {
+        if let Some(entries) = storage.maps.get(&map.name) {
+            for (keys, word) in entries {
+                if keys.len() != map.key_types.len() {
+                    bail!("storage map '{}' contains an invalid key", map.name);
+                }
+                for (key, key_type) in keys.iter().zip(&map.key_types) {
+                    validate_word(*key_type, key)
+                        .map_err(|error| anyhow!("storage map '{}': {error}", map.name))?;
+                }
+                validate_word(map.value_type, word)
+                    .map_err(|error| anyhow!("storage map '{}': {error}", map.name))?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -431,6 +466,7 @@ struct StackValue {
 
 struct RuntimeEnvironment<'a> {
     storage_fields: &'a [lithovm_bytecode::StorageField],
+    map_fields: &'a [lithovm_bytecode::MapField],
     event_definitions: &'a [lithovm_bytecode::EventDefinition],
     storage: &'a mut Storage,
     context: Option<&'a ExecutionContext>,
@@ -498,6 +534,34 @@ fn evaluate_expression(
                 stack.push(StackValue {
                     value_type: field.value_type,
                     word: *word,
+                });
+            }
+            Instruction::MapStorage(index) => {
+                let field = environment
+                    .map_fields
+                    .get(*index as usize)
+                    .ok_or_else(|| anyhow!("runtime map index {index} is out of range"))?;
+                let mut keys = Vec::with_capacity(field.key_types.len());
+                for key_type in field.key_types.iter().rev() {
+                    let key = stack
+                        .pop()
+                        .ok_or_else(|| anyhow!("expression stack underflow"))?;
+                    if key.value_type != *key_type {
+                        bail!("map key runtime type mismatch");
+                    }
+                    keys.push(key.word);
+                }
+                keys.reverse();
+                let word = environment
+                    .storage
+                    .maps
+                    .get(&field.name)
+                    .and_then(|entries| entries.get(&keys))
+                    .copied()
+                    .unwrap_or([0; 32]);
+                stack.push(StackValue {
+                    value_type: field.value_type,
+                    word,
                 });
             }
             Instruction::MessageSender => {
@@ -577,6 +641,28 @@ fn evaluate_expression(
                     word: word_from_bool(left < right),
                 });
             }
+            Instruction::AddU256 => {
+                let (left, right) = pop_u256_pair(&mut stack)?;
+                stack.push(StackValue {
+                    value_type: ValueType::U256,
+                    word: add_u256(left, right).ok_or_else(|| anyhow!("u256 addition overflow"))?,
+                });
+            }
+            Instruction::SubU256 => {
+                let (left, right) = pop_u256_pair(&mut stack)?;
+                stack.push(StackValue {
+                    value_type: ValueType::U256,
+                    word: subtract_u256(left, right)
+                        .ok_or_else(|| anyhow!("u256 subtraction underflow"))?,
+                });
+            }
+            Instruction::GteU256 => {
+                let (left, right) = pop_u256_pair(&mut stack)?;
+                stack.push(StackValue {
+                    value_type: ValueType::Bool,
+                    word: word_from_bool(left >= right),
+                });
+            }
         }
     }
     let result = stack
@@ -586,6 +672,16 @@ fn evaluate_expression(
         bail!("expression left extra runtime values");
     }
     Ok(result)
+}
+
+fn expression_gas(instructions: &[Instruction]) -> u64 {
+    instructions.iter().fold(0u64, |gas, instruction| {
+        gas.saturating_add(if matches!(instruction, Instruction::MapStorage(_)) {
+            MAP_READ_GAS
+        } else {
+            INSTRUCTION_GAS
+        })
+    })
 }
 
 struct GasMeter {
@@ -672,7 +768,7 @@ fn execute_block(
                 value_type,
                 expression,
             } => {
-                meter.charge(INSTRUCTION_GAS.saturating_mul(expression.len() as u64))?;
+                meter.charge(expression_gas(expression))?;
                 let value = evaluate_expression(
                     expression,
                     arguments,
@@ -686,7 +782,7 @@ fn execute_block(
                 locals.push(value);
             }
             Statement::SetLocal { local, expression } => {
-                meter.charge(INSTRUCTION_GAS.saturating_mul(expression.len() as u64))?;
+                meter.charge(expression_gas(expression))?;
                 let value = evaluate_expression(
                     expression,
                     arguments,
@@ -703,7 +799,7 @@ fn execute_block(
                 *binding = value;
             }
             Statement::Repeat { count, body } => {
-                meter.charge(INSTRUCTION_GAS.saturating_mul(count.len() as u64))?;
+                meter.charge(expression_gas(count))?;
                 let count =
                     evaluate_expression(count, arguments, parameter_types, locals, environment)?;
                 if count.value_type != ValueType::U64 || count.word[..24] != [0; 24] {
@@ -730,7 +826,7 @@ fn execute_block(
                 }
             }
             Statement::Require(condition) => {
-                meter.charge(INSTRUCTION_GAS.saturating_mul(condition.len() as u64))?;
+                meter.charge(expression_gas(condition))?;
                 let condition = evaluate_expression(
                     condition,
                     arguments,
@@ -756,7 +852,7 @@ fn execute_block(
                 return Err(ClassifiedFault::new(FailureKind::Revert, "execution reverted").into())
             }
             Statement::Return(expression) => {
-                meter.charge(INSTRUCTION_GAS.saturating_mul(expression.len() as u64))?;
+                meter.charge(expression_gas(expression))?;
                 return Ok(Some(evaluate_expression(
                     expression,
                     arguments,
@@ -766,7 +862,7 @@ fn execute_block(
                 )?));
             }
             Statement::Store { field, expression } => {
-                meter.charge(INSTRUCTION_GAS.saturating_mul(expression.len() as u64))?;
+                meter.charge(expression_gas(expression))?;
                 let field = environment
                     .storage_fields
                     .get(*field as usize)
@@ -787,6 +883,44 @@ fn execute_block(
                     .values
                     .insert(field.name.clone(), value.word);
             }
+            Statement::MapStore {
+                map,
+                keys,
+                expression,
+            } => {
+                let field = environment
+                    .map_fields
+                    .get(*map as usize)
+                    .ok_or_else(|| anyhow!("runtime map store index is out of range"))?;
+                let mut evaluated_keys = Vec::with_capacity(keys.len());
+                for (key, key_type) in keys.iter().zip(&field.key_types) {
+                    meter.charge(expression_gas(key))?;
+                    let key =
+                        evaluate_expression(key, arguments, parameter_types, locals, environment)?;
+                    if key.value_type != *key_type {
+                        bail!("map key runtime type mismatch");
+                    }
+                    evaluated_keys.push(key.word);
+                }
+                meter.charge(expression_gas(expression))?;
+                let value = evaluate_expression(
+                    expression,
+                    arguments,
+                    parameter_types,
+                    locals,
+                    environment,
+                )?;
+                if value.value_type != field.value_type {
+                    bail!("map value runtime type mismatch");
+                }
+                meter.charge(MAP_WRITE_GAS)?;
+                environment
+                    .storage
+                    .maps
+                    .entry(field.name.clone())
+                    .or_default()
+                    .insert(evaluated_keys, value.word);
+            }
             Statement::Emit { event, values } => {
                 let definition = environment
                     .event_definitions
@@ -794,7 +928,7 @@ fn execute_block(
                     .ok_or_else(|| anyhow!("runtime event index is out of range"))?;
                 let mut fields = Vec::with_capacity(values.len());
                 for (expression, field) in values.iter().zip(&definition.fields) {
-                    meter.charge(INSTRUCTION_GAS.saturating_mul(expression.len() as u64))?;
+                    meter.charge(expression_gas(expression))?;
                     let value = evaluate_expression(
                         expression,
                         arguments,
@@ -814,7 +948,7 @@ fn execute_block(
             }
             Statement::Transfer { recipient, amount } => {
                 meter.charge(NATIVE_TRANSFER_GAS)?;
-                meter.charge(INSTRUCTION_GAS.saturating_mul(recipient.len() as u64))?;
+                meter.charge(expression_gas(recipient))?;
                 let recipient = evaluate_expression(
                     recipient,
                     arguments,
@@ -822,7 +956,7 @@ fn execute_block(
                     locals,
                     environment,
                 )?;
-                meter.charge(INSTRUCTION_GAS.saturating_mul(amount.len() as u64))?;
+                meter.charge(expression_gas(amount))?;
                 let amount =
                     evaluate_expression(amount, arguments, parameter_types, locals, environment)?;
                 if recipient.value_type != ValueType::Address
@@ -847,13 +981,13 @@ fn execute_block(
                 value,
             } => {
                 meter.charge(CONTRACT_CALL_GAS)?;
-                meter.charge(INSTRUCTION_GAS.saturating_mul(target.len() as u64))?;
+                meter.charge(expression_gas(target))?;
                 let target =
                     evaluate_expression(target, arguments, parameter_types, locals, environment)?;
-                meter.charge(INSTRUCTION_GAS.saturating_mul(selector.len() as u64))?;
+                meter.charge(expression_gas(selector))?;
                 let selector =
                     evaluate_expression(selector, arguments, parameter_types, locals, environment)?;
-                meter.charge(INSTRUCTION_GAS.saturating_mul(value.len() as u64))?;
+                meter.charge(expression_gas(value))?;
                 let value =
                     evaluate_expression(value, arguments, parameter_types, locals, environment)?;
                 if target.value_type != ValueType::Address
@@ -883,7 +1017,7 @@ fn execute_block(
                 then_branch,
                 else_branch,
             } => {
-                meter.charge(INSTRUCTION_GAS.saturating_mul(condition.len() as u64))?;
+                meter.charge(expression_gas(condition))?;
                 let condition = evaluate_expression(
                     condition,
                     arguments,
@@ -950,6 +1084,19 @@ fn pop_u64(stack: &mut Vec<StackValue>) -> Result<u64> {
     Ok(u64::from_be_bytes(value.word[24..].try_into().unwrap()))
 }
 
+fn pop_u256_pair(stack: &mut Vec<StackValue>) -> Result<([u8; 32], [u8; 32])> {
+    let right = stack
+        .pop()
+        .ok_or_else(|| anyhow!("expression stack underflow"))?;
+    let left = stack
+        .pop()
+        .ok_or_else(|| anyhow!("expression stack underflow"))?;
+    if left.value_type != ValueType::U256 || right.value_type != ValueType::U256 {
+        bail!("expression operands are not u256");
+    }
+    Ok((left.word, right.word))
+}
+
 fn checked_div(left: u64, right: u64) -> Option<u64> {
     left.checked_div(right)
 }
@@ -985,6 +1132,17 @@ fn subtract_u256(left: [u8; 32], right: [u8; 32]) -> Option<[u8; 32]> {
     Some(result)
 }
 
+fn add_u256(left: [u8; 32], right: [u8; 32]) -> Option<[u8; 32]> {
+    let mut result = [0; 32];
+    let mut carry = 0u16;
+    for index in (0..32).rev() {
+        let value = left[index] as u16 + right[index] as u16 + carry;
+        result[index] = value as u8;
+        carry = value >> 8;
+    }
+    (carry == 0).then_some(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,6 +1171,7 @@ mod tests {
     fn executes_constant_and_identity_functions() {
         let bytes = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![
                 Function {
@@ -1055,6 +1214,7 @@ mod tests {
     fn rejects_bad_calls_before_execution() {
         let bytes = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "echo".into(),
@@ -1076,6 +1236,7 @@ mod tests {
     fn transactional_outcomes_report_failure_kind_and_consumed_gas() {
         let bytes = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "guarded".into(),
@@ -1131,6 +1292,7 @@ mod tests {
     fn executes_checked_typed_expressions() {
         let bytes = Program {
             storage: vec![],
+            maps: vec![],
             events: vec![],
             functions: vec![Function {
                 name: "increment".into(),

@@ -18,26 +18,28 @@ Status: implemented in candidate
 
 ## M2 — Typed executable core
 
-Status: typed expressions, locals, structured branches, bounded repeat loops and explicit failures implemented through version 10
+Status: typed expressions, locals, structured branches, bounded repeat loops, explicit failures and checked token amount operations implemented through version 11
 
 - typed expression AST/IR (checked `u64` arithmetic and comparisons implemented in candidate);
 - immutable local bindings and structured `if`/`else` implemented in the version 2 candidate;
 - mutable local bindings and typed assignment implemented in the version 8 candidate;
 - gas-bounded repeat loops implemented in the version 9 candidate;
 - typed `require` and terminal `revert` implemented in version 10;
+- checked `u256` addition, subtraction and greater-than-or-equal implemented in version 11;
 - remaining general loops and bounded recursion policy;
 - overflow, division, recursion and resource limits;
 - compiler/runtime differential and fuzz tests.
 
 ## M3 — Transactional state
 
-Status: scalar storage and explicit rollback implemented through version 10
+Status: scalar and typed map storage with explicit rollback implemented through version 11
 
 - deterministic ordered scalar storage schema implemented;
 - typed reads, writes and zero initialization implemented;
 - staged atomic commit and rollback on runtime and out-of-gas failures implemented;
 - explicit `require`/`revert` rollback across storage and staged host effects implemented;
-- remaining collection storage, migrations, namespacing integration and broader adversarial tests.
+- typed single and nested maps with deterministic multi-key encoding implemented in version 11;
+- remaining general collections, migrations, namespacing integration and broader adversarial tests.
 
 ## M4 — Host effects and gas
 
