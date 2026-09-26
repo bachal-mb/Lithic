@@ -405,6 +405,34 @@ struct BodyParser<'a> {
     return_type: ValueType,
 }
 
+fn is_terminal(statement: &Statement) -> bool {
+    match statement {
+        Statement::Return(_) | Statement::Revert => true,
+        Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            then_branch.last().is_some_and(is_terminal)
+                && else_branch.last().is_some_and(is_terminal)
+        }
+        _ => false,
+    }
+}
+
+// v11 requires nonempty encoded blocks. A metered require(true) represents
+// a source-level empty branch without changing the bytecode format.
+fn nonempty_branch(statements: Vec<Statement>) -> Vec<Statement> {
+    if statements.is_empty() {
+        vec![Statement::Require(vec![Instruction::Constant(
+            ValueType::Bool,
+            word_from_u64(1),
+        )])]
+    } else {
+        statements
+    }
+}
+
 impl BodyParser<'_> {
     fn parse_block(
         &mut self,
@@ -449,8 +477,9 @@ impl BodyParser<'_> {
                 terminal = true;
                 self.parse_return_statement()?
             } else if self.consume_keyword("if") {
-                terminal = true;
-                self.parse_if(depth)?
+                let statement = self.parse_if(depth)?;
+                terminal = is_terminal(&statement);
+                statement
             } else if self.consume_keyword("repeat") {
                 self.parse_repeat(depth)?
             } else if self.consume_keyword("require") {
@@ -789,18 +818,22 @@ impl BodyParser<'_> {
         }
 
         let inherited_local_count = self.local_names.len();
-        let then_branch = self.parse_block(true, depth + 1, true)?;
+        let then_branch = nonempty_branch(self.parse_block(true, depth + 1, false)?);
         self.local_names.truncate(inherited_local_count);
         self.local_types.truncate(inherited_local_count);
         self.local_mutability.truncate(inherited_local_count);
 
         self.skip_whitespace();
         if !self.consume_keyword("else") {
-            return Err("if statement requires an else branch".to_string());
+            return Ok(Statement::If {
+                condition,
+                then_branch,
+                else_branch: nonempty_branch(Vec::new()),
+            });
         }
         self.skip_whitespace();
         self.expect_byte(b'{', "expected '{' after else")?;
-        let else_branch = self.parse_block(true, depth + 1, true)?;
+        let else_branch = nonempty_branch(self.parse_block(true, depth + 1, false)?);
         self.local_names.truncate(inherited_local_count);
         self.local_types.truncate(inherited_local_count);
         self.local_mutability.truncate(inherited_local_count);
@@ -1748,7 +1781,7 @@ mod tests {
             ),
             (
                 "contract C { pub fn x(value: u64) -> u64 { if value < 1 { return 1; } } }",
-                "requires an else branch",
+                "function does not return on every path",
             ),
             (
                 "contract C { pub fn x(value: u64) -> u64 { if value { return 1; } else { return 2; } } }",

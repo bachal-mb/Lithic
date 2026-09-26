@@ -23,7 +23,7 @@ code, deployment provenance or native LithoVM availability.
 | Configurable decimals and supply | `u64`/`u256` values exist | Preserve `uint8` decimals range and exact base-unit supply; test non-18 decimals |
 | Factory creates a child token | Top-level host deploy/init exists | Contract-level creation with deterministic child identity, metering and transaction-wide rollback |
 | Supply and ownership assigned to original caller | Caller context exists | Pass creator explicitly to child initializer; factory must not receive supply or ownership |
-| Mint/burn/pause/ownership flags | Not implemented by the LAX fixture | Port four flags and authorization semantics, including burnFrom and ownership renunciation |
+| Mint/burn/pause/ownership flags | Separate finance_token_v11 fixture implements the four flags, authorization, delegated burn and ownership changes; 16 combinations tested | Full metadata/factory integration and OpenZeppelin differential conformance; LAX remains separate |
 | TokenCreated receipt | Native typed events exist | Address plus string metadata, indexed event policy and committed receipt decoding |
 | Wallet submission and confirmation | No native chain adapter | Authenticated transaction, simulation, real hash, inclusion/failure and explorer status |
 
