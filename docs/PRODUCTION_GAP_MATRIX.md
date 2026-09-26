@@ -44,6 +44,19 @@ found. Documentation and pseudocode are not counted as implementation.
 
 ## Ordered closure path
 
+### Local string milestone, 2026-09-26
+
+The current candidate now supports compiler-to-VM string parameters, locals,
+scalar storage, events, equality and returns under bytecode v12, with bounded
+UTF-8 values, byte-dependent gas and transactional rollback tests. Scalar
+programs still emit v11. See [exact supported behavior and
+limits](LITHOVM_DYNAMIC_VALUES_V1.md). This advances the language, storage,
+events and ABI rows; it does not close any production row. The host still has
+scalar requests/results and rejects v12 deployment. String literals, dynamic
+host initialization, factories and consensus integration remain necessary.
+
+### Closure sequence
+
 1. Merge and review v10 explicit failure semantics.
 2. Define the persistent host interface, structured failure/gas receipt and
    nested call atomicity; implement it with an in-memory conformance adapter.

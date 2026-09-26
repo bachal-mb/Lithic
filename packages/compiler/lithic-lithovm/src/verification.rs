@@ -60,7 +60,7 @@ pub fn verify(request: &Request, chain: ChainCode<'_>) -> Result<VerifiedArtifac
         return Err("noncanonical transaction hash".into());
     }
     if request.sources.len() != 1 {
-        return Err("native v11 requires exactly one source".into());
+        return Err("native compilation requires exactly one source".into());
     }
     let source = &request.sources[0];
     // Paths are metadata only; never open a submitted path or download a URL.

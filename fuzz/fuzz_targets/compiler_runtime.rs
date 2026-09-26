@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use lithic_lithovm::{compile, TARGET};
+use lithic_lithovm::compile;
 use lithovm::Vm;
 
 const MAX_SOURCE_BYTES: usize = 64 * 1024;
@@ -14,7 +14,10 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     if let Ok(artifact) = compile(source) {
-        assert_eq!(artifact.target, TARGET);
+        assert_eq!(
+            artifact.target,
+            format!("lithovm-native-v{}", artifact.bytecode_version)
+        );
         assert_eq!(compile(source).unwrap(), artifact);
         let bytes = hex::decode(
             artifact
@@ -23,6 +26,7 @@ fuzz_target!(|data: &[u8]| {
                 .expect("compiler bytecode must use a 0x prefix"),
         )
         .expect("compiler bytecode must be hex");
+        assert_eq!(bytes[7], artifact.bytecode_version);
         Vm::default()
             .load_and_validate(&bytes)
             .expect("compiler output must load in the runtime");

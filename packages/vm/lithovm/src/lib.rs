@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Result};
+use lithovm_bytecode::values::{self, Value, MAX_STRING_BYTES};
 use lithovm_bytecode::{
     parse, validate_word, Instruction, Program, ReturnValue, Statement, ValueType,
 };
@@ -6,6 +7,7 @@ use lithovm_receipts::ReceiptV1;
 use lithovm_zk_verifier::{StubVerifier, ZkVerifier};
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
 /// Minimal LithoVM execution context (scaffold).
 pub struct Vm {
@@ -13,11 +15,11 @@ pub struct Vm {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExecutionResult {
+pub struct ExecutionResult<T = [u8; 32]> {
     pub return_type: ValueType,
-    pub return_value: [u8; 32],
+    pub return_value: T,
     pub gas_used: u64,
-    pub events: Vec<EventRecord>,
+    pub events: Vec<EventRecord<T>>,
     pub transfers: Vec<NativeTransfer>,
     pub calls: Vec<ContractCall>,
 }
@@ -38,8 +40,8 @@ pub struct ExecutionFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ExecutionOutcome {
-    Success(ExecutionResult),
+pub enum ExecutionOutcome<T = [u8; 32]> {
+    Success(ExecutionResult<T>),
     Failure(ExecutionFailure),
 }
 
@@ -67,9 +69,9 @@ impl Display for ClassifiedFault {
 impl std::error::Error for ClassifiedFault {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EventRecord {
+pub struct EventRecord<T = [u8; 32]> {
     pub name: String,
-    pub fields: Vec<(String, ValueType, [u8; 32])>,
+    pub fields: Vec<(String, ValueType, T)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,10 +102,15 @@ pub struct ExecutionContext {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Storage {
     values: BTreeMap<String, [u8; 32]>,
+    strings: BTreeMap<String, Arc<str>>,
     maps: BTreeMap<String, BTreeMap<Vec<[u8; 32]>, [u8; 32]>>,
 }
 
 impl Storage {
+    pub fn get_string(&self, field: &str) -> Option<&str> {
+        self.strings.get(field).map(AsRef::as_ref)
+    }
+
     pub fn get(&self, field: &str) -> Option<&[u8; 32]> {
         self.values.get(field)
     }
@@ -156,7 +163,7 @@ impl Vm {
         gas_limit: u64,
     ) -> Result<ExecutionResult> {
         let program = parse(bytes)?;
-        if !program.storage.is_empty() {
+        if !program.storage.is_empty() || !program.maps.is_empty() {
             bail!("stateful LithoVM program requires execute_with_storage");
         }
         let mut storage = Storage::default();
@@ -181,7 +188,7 @@ impl Vm {
         context: &ExecutionContext,
     ) -> Result<ExecutionResult> {
         let program = parse(bytes)?;
-        if !program.storage.is_empty() {
+        if !program.storage.is_empty() || !program.maps.is_empty() {
             bail!("stateful LithoVM program requires execute_with_storage_and_context");
         }
         validate_context(context)?;
@@ -285,6 +292,77 @@ impl Vm {
         }
     }
 
+    /// Candidate dynamic-value API. No chain transaction or host dispatch is implied.
+    /// Both state and emitted effects are discarded on failure.
+    pub fn execute_values_transactionally(
+        &self,
+        bytes: &[u8],
+        function_name: &str,
+        arguments: &[Value],
+        gas_limit: u64,
+        storage: &mut Storage,
+        context: &ExecutionContext,
+    ) -> ExecutionOutcome<Value> {
+        let mut gas_used = 0;
+        let result = (|| {
+            let program = parse(bytes)?;
+            validate_context(context)?;
+            // Validate individual and aggregate bounds before copying arguments.
+            values::encoded_size(arguments)?;
+            let function = program
+                .functions
+                .iter()
+                .find(|f| f.name == function_name)
+                .ok_or_else(|| anyhow!("unknown LithoVM function '{function_name}'"))?;
+            if function.parameters.len() != arguments.len() {
+                bail!("argument count mismatch");
+            }
+            for (ty, value) in function.parameters.iter().zip(arguments) {
+                let actual = match value {
+                    Value::Word(ty, _) => *ty,
+                    Value::String(_) => ValueType::String,
+                };
+                if *ty != actual {
+                    bail!("argument type mismatch");
+                }
+            }
+            let initial_cost = BASE_CALL_GAS
+                + PARAMETER_GAS * arguments.len() as u64
+                + arguments
+                    .iter()
+                    .map(|value| match value {
+                        Value::String(text) => text.len() as u64,
+                        _ => 0,
+                    })
+                    .sum::<u64>();
+            if gas_limit < initial_cost {
+                gas_used = gas_limit;
+                return Err(ClassifiedFault::new(FailureKind::OutOfGas, "out of gas").into());
+            }
+            let arguments = arguments
+                .iter()
+                .map(StackValue::from_value)
+                .collect::<Vec<_>>();
+            let mut staged = storage.clone();
+            prepare_storage(&program, &mut staged)?;
+            let result = execute_dynamic_program(
+                &program,
+                function_name,
+                &arguments,
+                gas_limit,
+                &mut staged,
+                Some(context),
+                &mut gas_used,
+            )?;
+            *storage = staged;
+            Ok(result)
+        })();
+        match result {
+            Ok(result) => ExecutionOutcome::Success(result),
+            Err(error) => ExecutionOutcome::Failure(classify_failure(error, gas_used)),
+        }
+    }
+
     /// Validate a receipt signature/zk-proof at a high level (scaffold).
     /// Production: enforce LEP100-2/4/5 rules in consensus + runtime.
     pub fn validate_receipt(&self, _receipt: &ReceiptV1) -> Result<()> {
@@ -312,6 +390,72 @@ fn execute_program(
     context: Option<&ExecutionContext>,
     observed_gas: &mut u64,
 ) -> Result<ExecutionResult> {
+    if program.bytecode_version() >= lithovm_bytecode::STRING_VERSION {
+        bail!("dynamic program requires execute_values_transactionally");
+    }
+    let function = program
+        .functions
+        .iter()
+        .find(|f| f.name == function_name)
+        .ok_or_else(|| anyhow!("unknown LithoVM function '{function_name}'"))?;
+    if function.parameters.len() != arguments.len() {
+        bail!(
+            "function '{}' requires {} arguments, received {}",
+            function.name,
+            function.parameters.len(),
+            arguments.len()
+        );
+    }
+    let arguments = arguments
+        .iter()
+        .zip(&function.parameters)
+        .map(|(word, ty)| StackValue::scalar(*ty, *word))
+        .collect::<Vec<_>>();
+    let result = execute_dynamic_program(
+        program,
+        function_name,
+        &arguments,
+        gas_limit,
+        storage,
+        context,
+        observed_gas,
+    )?;
+    let scalar = |value| match value {
+        Value::Word(_, word) => Ok(word),
+        Value::String(_) => Err(anyhow!("dynamic value in scalar execution")),
+    };
+    Ok(ExecutionResult {
+        return_type: result.return_type,
+        return_value: scalar(result.return_value)?,
+        gas_used: result.gas_used,
+        events: result
+            .events
+            .into_iter()
+            .map(|event| {
+                Ok(EventRecord {
+                    name: event.name,
+                    fields: event
+                        .fields
+                        .into_iter()
+                        .map(|(name, ty, value)| Ok((name, ty, scalar(value)?)))
+                        .collect::<Result<_>>()?,
+                })
+            })
+            .collect::<Result<_>>()?,
+        transfers: result.transfers,
+        calls: result.calls,
+    })
+}
+
+fn execute_dynamic_program(
+    program: &Program,
+    function_name: &str,
+    arguments: &[StackValue],
+    gas_limit: u64,
+    storage: &mut Storage,
+    context: Option<&ExecutionContext>,
+    observed_gas: &mut u64,
+) -> Result<ExecutionResult<Value>> {
     let function = program
         .functions
         .iter()
@@ -325,8 +469,17 @@ fn execute_program(
             arguments.len()
         );
     }
-    for (index, (value_type, word)) in function.parameters.iter().zip(arguments).enumerate() {
-        validate_word(*value_type, word).map_err(|error| anyhow!("argument {index}: {error}"))?;
+    for (index, (value_type, value)) in function.parameters.iter().zip(arguments).enumerate() {
+        if *value_type != value.value_type {
+            bail!("argument {index}: type mismatch");
+        }
+        if let Some(text) = &value.text {
+            if text.len() > MAX_STRING_BYTES {
+                bail!("string exceeds ABI byte limit");
+            }
+        } else {
+            validate_word(*value_type, &value.word)?;
+        }
     }
     let expression_cost = match &function.return_value {
         ReturnValue::Expression(instructions) => expression_gas(instructions),
@@ -335,6 +488,7 @@ fn execute_program(
     };
     let gas_used = BASE_CALL_GAS
         .checked_add(PARAMETER_GAS.saturating_mul(arguments.len() as u64))
+        .and_then(|gas| gas.checked_add(arguments.iter().map(StackValue::byte_cost).sum::<u64>()))
         .and_then(|gas| gas.checked_add(expression_cost))
         .ok_or_else(|| anyhow!("gas calculation overflow"))?;
     if gas_limit < gas_used {
@@ -353,21 +507,27 @@ fn execute_program(
         storage,
         context,
         events: Vec::new(),
+        dynamic_event_bytes: 0,
+        dynamic: program.bytecode_version() >= lithovm_bytecode::STRING_VERSION,
         transfers: Vec::new(),
         calls: Vec::new(),
         remaining_balance: context.map_or([0; 32], |value| value.contract_balance),
     };
     let return_value = match &function.return_value {
-        ReturnValue::Constant(word) => word,
-        ReturnValue::Parameter(index) => &arguments[*index as usize],
+        ReturnValue::Constant(word) => StackValue::scalar(function.return_type, *word),
+        ReturnValue::Parameter(index) => arguments[*index as usize].clone(),
         ReturnValue::Expression(instructions) => {
             return execute_expression(
                 instructions,
                 arguments,
                 &function.parameters,
                 function.return_type,
-                gas_used,
+                GasMeter {
+                    used: gas_used,
+                    limit: gas_limit,
+                },
                 &environment,
+                observed_gas,
             )
         }
         ReturnValue::Statements(statements) => {
@@ -385,10 +545,17 @@ fn execute_program(
             )
         }
     };
+    let mut meter = GasMeter {
+        used: gas_used,
+        limit: gas_limit,
+    };
+    let charge = meter.charge(return_value.byte_cost());
+    *observed_gas = meter.used;
+    charge?;
     Ok(ExecutionResult {
         return_type: function.return_type,
-        return_value: *return_value,
-        gas_used,
+        return_value: return_value.into_value(),
+        gas_used: meter.used,
         events: environment.events,
         transfers: environment.transfers,
         calls: environment.calls,
@@ -430,7 +597,27 @@ fn prepare_storage(program: &Program, storage: &mut Storage) -> Result<()> {
             bail!("storage contains unknown field '{name}'");
         }
     }
+    for (name, text) in &storage.strings {
+        if !program
+            .storage
+            .iter()
+            .any(|field| field.name == *name && field.value_type == ValueType::String)
+            || text.len() > MAX_STRING_BYTES
+        {
+            bail!("invalid string storage field '{name}'");
+        }
+    }
     for field in &program.storage {
+        if field.value_type == ValueType::String {
+            if storage.values.contains_key(&field.name) {
+                bail!("scalar value in string storage field '{}'", field.name);
+            }
+            storage
+                .strings
+                .entry(field.name.clone())
+                .or_insert_with(|| Arc::from(""));
+            continue;
+        }
         let word = storage.values.entry(field.name.clone()).or_insert([0; 32]);
         validate_word(field.value_type, word)
             .map_err(|error| anyhow!("storage field '{}': {error}", field.name))?;
@@ -458,10 +645,43 @@ fn prepare_storage(program: &Program, storage: &mut Storage) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct StackValue {
     value_type: ValueType,
     word: [u8; 32],
+    text: Option<Arc<str>>,
+}
+
+impl StackValue {
+    fn scalar(value_type: ValueType, word: [u8; 32]) -> Self {
+        Self {
+            value_type,
+            word,
+            text: None,
+        }
+    }
+
+    fn from_value(value: &Value) -> Self {
+        match value {
+            Value::Word(ty, word) => Self::scalar(*ty, *word),
+            Value::String(text) => Self {
+                value_type: ValueType::String,
+                word: [0; 32],
+                text: Some(Arc::from(text.as_str())),
+            },
+        }
+    }
+
+    fn into_value(self) -> Value {
+        match self.text {
+            Some(text) => Value::String(text.to_string()),
+            None => Value::Word(self.value_type, self.word),
+        }
+    }
+
+    fn byte_cost(&self) -> u64 {
+        self.text.as_ref().map_or(0, |text| text.len() as u64)
+    }
 }
 
 struct RuntimeEnvironment<'a> {
@@ -470,7 +690,9 @@ struct RuntimeEnvironment<'a> {
     event_definitions: &'a [lithovm_bytecode::EventDefinition],
     storage: &'a mut Storage,
     context: Option<&'a ExecutionContext>,
-    events: Vec<EventRecord>,
+    events: Vec<EventRecord<Value>>,
+    dynamic_event_bytes: usize,
+    dynamic: bool,
     transfers: Vec<NativeTransfer>,
     calls: Vec<ContractCall>,
     remaining_balance: [u8; 32],
@@ -478,21 +700,34 @@ struct RuntimeEnvironment<'a> {
 
 fn execute_expression(
     instructions: &[Instruction],
-    arguments: &[[u8; 32]],
+    arguments: &[StackValue],
     parameter_types: &[ValueType],
     return_type: ValueType,
-    gas_used: u64,
+    mut meter: GasMeter,
     environment: &RuntimeEnvironment<'_>,
-) -> Result<ExecutionResult> {
-    let result = evaluate_expression(instructions, arguments, parameter_types, &[], environment)?;
-    validate_word(return_type, &result.word)?;
+    observed_gas: &mut u64,
+) -> Result<ExecutionResult<Value>> {
+    let result = (|| {
+        let result = evaluate_expression(
+            instructions,
+            arguments,
+            parameter_types,
+            &[],
+            environment,
+            &mut meter,
+        )?;
+        meter.charge(result.byte_cost())?;
+        Ok::<_, anyhow::Error>(result)
+    })();
+    *observed_gas = meter.used;
+    let result = result?;
     if result.value_type != return_type {
         bail!("expression runtime type does not match function return type");
     }
     Ok(ExecutionResult {
         return_type,
-        return_value: result.word,
-        gas_used,
+        return_value: result.into_value(),
+        gas_used: meter.used,
         events: Vec::new(),
         transfers: Vec::new(),
         calls: Vec::new(),
@@ -501,40 +736,54 @@ fn execute_expression(
 
 fn evaluate_expression(
     instructions: &[Instruction],
-    arguments: &[[u8; 32]],
-    parameter_types: &[ValueType],
+    arguments: &[StackValue],
+    _parameter_types: &[ValueType],
     locals: &[StackValue],
     environment: &RuntimeEnvironment<'_>,
+    meter: &mut GasMeter,
 ) -> Result<StackValue> {
     let mut stack: Vec<StackValue> = Vec::new();
     for instruction in instructions {
         match instruction {
-            Instruction::Constant(value_type, word) => stack.push(StackValue {
-                value_type: *value_type,
-                word: *word,
-            }),
-            Instruction::Parameter(index) => stack.push(StackValue {
-                value_type: parameter_types[*index as usize],
-                word: arguments[*index as usize],
-            }),
-            Instruction::Local(index) => stack.push(
-                *locals
+            Instruction::Constant(value_type, word) => {
+                stack.push(StackValue::scalar(*value_type, *word))
+            }
+            Instruction::Parameter(index) => {
+                let value = &arguments[*index as usize];
+                meter.charge(value.byte_cost())?;
+                stack.push(value.clone());
+            }
+            Instruction::Local(index) => {
+                let value = locals
                     .get(*index as usize)
-                    .ok_or_else(|| anyhow!("runtime local index {index} is out of range"))?,
-            ),
+                    .ok_or_else(|| anyhow!("runtime local index {index} is out of range"))?;
+                meter.charge(value.byte_cost())?;
+                stack.push(value.clone());
+            }
             Instruction::Storage(index) => {
                 let field = environment
                     .storage_fields
                     .get(*index as usize)
                     .ok_or_else(|| anyhow!("runtime storage index {index} is out of range"))?;
+                if field.value_type == ValueType::String {
+                    let text = environment
+                        .storage
+                        .strings
+                        .get(&field.name)
+                        .ok_or_else(|| anyhow!("runtime string storage is missing"))?;
+                    meter.charge(text.len() as u64)?;
+                    stack.push(StackValue {
+                        value_type: ValueType::String,
+                        word: [0; 32],
+                        text: Some(text.clone()),
+                    });
+                    continue;
+                }
                 let word =
                     environment.storage.values.get(&field.name).ok_or_else(|| {
                         anyhow!("runtime storage field '{}' is missing", field.name)
                     })?;
-                stack.push(StackValue {
-                    value_type: field.value_type,
-                    word: *word,
-                });
+                stack.push(StackValue::scalar(field.value_type, *word));
             }
             Instruction::MapStorage(index) => {
                 let field = environment
@@ -559,55 +808,46 @@ fn evaluate_expression(
                     .and_then(|entries| entries.get(&keys))
                     .copied()
                     .unwrap_or([0; 32]);
-                stack.push(StackValue {
-                    value_type: field.value_type,
-                    word,
-                });
+                stack.push(StackValue::scalar(field.value_type, word));
             }
             Instruction::MessageSender => {
                 let context = environment
                     .context
                     .ok_or_else(|| anyhow!("contextual program requires an execution context"))?;
-                stack.push(StackValue {
-                    value_type: ValueType::Address,
-                    word: context.caller,
-                });
+                stack.push(StackValue::scalar(ValueType::Address, context.caller));
             }
             Instruction::MessageValue => {
                 let context = environment
                     .context
                     .ok_or_else(|| anyhow!("contextual program requires an execution context"))?;
-                stack.push(StackValue {
-                    value_type: ValueType::U256,
-                    word: context.value,
-                });
+                stack.push(StackValue::scalar(ValueType::U256, context.value));
             }
             Instruction::BlockHeight => {
                 let context = environment
                     .context
                     .ok_or_else(|| anyhow!("contextual program requires an execution context"))?;
-                stack.push(StackValue {
-                    value_type: ValueType::U64,
-                    word: word_from_u64(context.block_height),
-                });
+                stack.push(StackValue::scalar(
+                    ValueType::U64,
+                    word_from_u64(context.block_height),
+                ));
             }
             Instruction::BlockTimestamp => {
                 let context = environment
                     .context
                     .ok_or_else(|| anyhow!("contextual program requires an execution context"))?;
-                stack.push(StackValue {
-                    value_type: ValueType::U64,
-                    word: word_from_u64(context.block_timestamp),
-                });
+                stack.push(StackValue::scalar(
+                    ValueType::U64,
+                    word_from_u64(context.block_timestamp),
+                ));
             }
             Instruction::ChainId => {
                 let context = environment
                     .context
                     .ok_or_else(|| anyhow!("contextual program requires an execution context"))?;
-                stack.push(StackValue {
-                    value_type: ValueType::U64,
-                    word: word_from_u64(context.chain_id),
-                });
+                stack.push(StackValue::scalar(
+                    ValueType::U64,
+                    word_from_u64(context.chain_id),
+                ));
             }
             Instruction::AddU64 => {
                 binary_u64(&mut stack, u64::checked_add, "u64 addition overflow")?
@@ -629,39 +869,40 @@ fn evaluate_expression(
                 if left.value_type != right.value_type {
                     bail!("equality operands have different runtime types");
                 }
-                stack.push(StackValue {
-                    value_type: ValueType::Bool,
-                    word: word_from_bool(left.word == right.word),
-                });
+                meter.charge(left.byte_cost().saturating_add(right.byte_cost()))?;
+                stack.push(StackValue::scalar(
+                    ValueType::Bool,
+                    word_from_bool(left.word == right.word && left.text == right.text),
+                ));
             }
             Instruction::LtU64 => {
                 let (left, right) = pop_u64_pair(&mut stack)?;
-                stack.push(StackValue {
-                    value_type: ValueType::Bool,
-                    word: word_from_bool(left < right),
-                });
+                stack.push(StackValue::scalar(
+                    ValueType::Bool,
+                    word_from_bool(left < right),
+                ));
             }
             Instruction::AddU256 => {
                 let (left, right) = pop_u256_pair(&mut stack)?;
-                stack.push(StackValue {
-                    value_type: ValueType::U256,
-                    word: add_u256(left, right).ok_or_else(|| anyhow!("u256 addition overflow"))?,
-                });
+                stack.push(StackValue::scalar(
+                    ValueType::U256,
+                    add_u256(left, right).ok_or_else(|| anyhow!("u256 addition overflow"))?,
+                ));
             }
             Instruction::SubU256 => {
                 let (left, right) = pop_u256_pair(&mut stack)?;
-                stack.push(StackValue {
-                    value_type: ValueType::U256,
-                    word: subtract_u256(left, right)
+                stack.push(StackValue::scalar(
+                    ValueType::U256,
+                    subtract_u256(left, right)
                         .ok_or_else(|| anyhow!("u256 subtraction underflow"))?,
-                });
+                ));
             }
             Instruction::GteU256 => {
                 let (left, right) = pop_u256_pair(&mut stack)?;
-                stack.push(StackValue {
-                    value_type: ValueType::Bool,
-                    word: word_from_bool(left >= right),
-                });
+                stack.push(StackValue::scalar(
+                    ValueType::Bool,
+                    word_from_bool(left >= right),
+                ));
             }
         }
     }
@@ -710,13 +951,13 @@ impl GasMeter {
 
 fn execute_statements(
     statements: &[Statement],
-    arguments: &[[u8; 32]],
+    arguments: &[StackValue],
     parameter_types: &[ValueType],
     return_type: ValueType,
     mut meter: GasMeter,
     environment: &mut RuntimeEnvironment<'_>,
     observed_gas: &mut u64,
-) -> Result<ExecutionResult> {
+) -> Result<ExecutionResult<Value>> {
     if meter.used > meter.limit {
         bail!(
             "out of gas: requires at least {}, limit is {}",
@@ -738,10 +979,12 @@ fn execute_statements(
     if result.value_type != return_type {
         bail!("statement return type does not match function return type");
     }
-    validate_word(return_type, &result.word)?;
+    let charge = meter.charge(result.byte_cost());
+    *observed_gas = meter.used;
+    charge?;
     Ok(ExecutionResult {
         return_type,
-        return_value: result.word,
+        return_value: result.into_value(),
         gas_used: meter.used,
         events: std::mem::take(&mut environment.events),
         transfers: std::mem::take(&mut environment.transfers),
@@ -751,7 +994,7 @@ fn execute_statements(
 
 fn execute_block(
     statements: &[Statement],
-    arguments: &[[u8; 32]],
+    arguments: &[StackValue],
     parameter_types: &[ValueType],
     locals: &mut Vec<StackValue>,
     meter: &mut GasMeter,
@@ -775,6 +1018,7 @@ fn execute_block(
                     parameter_types,
                     locals,
                     environment,
+                    meter,
                 )?;
                 if value.value_type != *value_type {
                     bail!("local binding runtime type mismatch");
@@ -789,6 +1033,7 @@ fn execute_block(
                     parameter_types,
                     locals,
                     environment,
+                    meter,
                 )?;
                 let binding = locals
                     .get_mut(*local as usize)
@@ -800,8 +1045,14 @@ fn execute_block(
             }
             Statement::Repeat { count, body } => {
                 meter.charge(expression_gas(count))?;
-                let count =
-                    evaluate_expression(count, arguments, parameter_types, locals, environment)?;
+                let count = evaluate_expression(
+                    count,
+                    arguments,
+                    parameter_types,
+                    locals,
+                    environment,
+                    meter,
+                )?;
                 if count.value_type != ValueType::U64 || count.word[..24] != [0; 24] {
                     bail!("repeat count runtime type is not a canonical u64");
                 }
@@ -833,6 +1084,7 @@ fn execute_block(
                     parameter_types,
                     locals,
                     environment,
+                    meter,
                 )?;
                 if condition.value_type != ValueType::Bool {
                     bail!("require condition runtime type is not bool");
@@ -859,6 +1111,7 @@ fn execute_block(
                     parameter_types,
                     locals,
                     environment,
+                    meter,
                 )?));
             }
             Statement::Store { field, expression } => {
@@ -873,9 +1126,15 @@ fn execute_block(
                     parameter_types,
                     locals,
                     environment,
+                    meter,
                 )?;
                 if value.value_type != field.value_type {
                     bail!("storage write runtime type mismatch");
+                }
+                if let Some(text) = value.text {
+                    meter.charge(text.len() as u64)?;
+                    environment.storage.strings.insert(field.name.clone(), text);
+                    continue;
                 }
                 validate_word(field.value_type, &value.word)?;
                 environment
@@ -895,8 +1154,14 @@ fn execute_block(
                 let mut evaluated_keys = Vec::with_capacity(keys.len());
                 for (key, key_type) in keys.iter().zip(&field.key_types) {
                     meter.charge(expression_gas(key))?;
-                    let key =
-                        evaluate_expression(key, arguments, parameter_types, locals, environment)?;
+                    let key = evaluate_expression(
+                        key,
+                        arguments,
+                        parameter_types,
+                        locals,
+                        environment,
+                        meter,
+                    )?;
                     if key.value_type != *key_type {
                         bail!("map key runtime type mismatch");
                     }
@@ -909,6 +1174,7 @@ fn execute_block(
                     parameter_types,
                     locals,
                     environment,
+                    meter,
                 )?;
                 if value.value_type != field.value_type {
                     bail!("map value runtime type mismatch");
@@ -927,6 +1193,7 @@ fn execute_block(
                     .get(*event as usize)
                     .ok_or_else(|| anyhow!("runtime event index is out of range"))?;
                 let mut fields = Vec::with_capacity(values.len());
+                let mut event_bytes = 7usize;
                 for (expression, field) in values.iter().zip(&definition.fields) {
                     meter.charge(expression_gas(expression))?;
                     let value = evaluate_expression(
@@ -935,11 +1202,30 @@ fn execute_block(
                         parameter_types,
                         locals,
                         environment,
+                        meter,
                     )?;
                     if value.value_type != field.value_type {
                         bail!("event field runtime type mismatch");
                     }
-                    fields.push((field.name.clone(), field.value_type, value.word));
+                    if value.text.is_some() {
+                        event_bytes += 3 + value.byte_cost() as usize;
+                    } else {
+                        event_bytes += 33;
+                    }
+                    if environment.dynamic
+                        && environment.dynamic_event_bytes + event_bytes
+                            > values::MAX_ENVELOPE_BYTES
+                    {
+                        bail!("dynamic event output exceeds byte limit");
+                    }
+                    meter.charge(value.byte_cost())?;
+                    fields.push((field.name.clone(), field.value_type, value.into_value()));
+                }
+                if environment.dynamic {
+                    if environment.dynamic_event_bytes + event_bytes > values::MAX_ENVELOPE_BYTES {
+                        bail!("dynamic event output exceeds byte limit");
+                    }
+                    environment.dynamic_event_bytes += event_bytes;
                 }
                 environment.events.push(EventRecord {
                     name: definition.name.clone(),
@@ -955,10 +1241,17 @@ fn execute_block(
                     parameter_types,
                     locals,
                     environment,
+                    meter,
                 )?;
                 meter.charge(expression_gas(amount))?;
-                let amount =
-                    evaluate_expression(amount, arguments, parameter_types, locals, environment)?;
+                let amount = evaluate_expression(
+                    amount,
+                    arguments,
+                    parameter_types,
+                    locals,
+                    environment,
+                    meter,
+                )?;
                 if recipient.value_type != ValueType::Address
                     || amount.value_type != ValueType::U256
                 {
@@ -982,14 +1275,32 @@ fn execute_block(
             } => {
                 meter.charge(CONTRACT_CALL_GAS)?;
                 meter.charge(expression_gas(target))?;
-                let target =
-                    evaluate_expression(target, arguments, parameter_types, locals, environment)?;
+                let target = evaluate_expression(
+                    target,
+                    arguments,
+                    parameter_types,
+                    locals,
+                    environment,
+                    meter,
+                )?;
                 meter.charge(expression_gas(selector))?;
-                let selector =
-                    evaluate_expression(selector, arguments, parameter_types, locals, environment)?;
+                let selector = evaluate_expression(
+                    selector,
+                    arguments,
+                    parameter_types,
+                    locals,
+                    environment,
+                    meter,
+                )?;
                 meter.charge(expression_gas(value))?;
-                let value =
-                    evaluate_expression(value, arguments, parameter_types, locals, environment)?;
+                let value = evaluate_expression(
+                    value,
+                    arguments,
+                    parameter_types,
+                    locals,
+                    environment,
+                    meter,
+                )?;
                 if target.value_type != ValueType::Address
                     || selector.value_type != ValueType::Bytes32
                     || value.value_type != ValueType::U256
@@ -1024,6 +1335,7 @@ fn execute_block(
                     parameter_types,
                     locals,
                     environment,
+                    meter,
                 )?;
                 if condition.value_type != ValueType::Bool {
                     bail!("if condition runtime type is not bool");
@@ -1061,10 +1373,7 @@ fn binary_u64(
 ) -> Result<()> {
     let (left, right) = pop_u64_pair(stack)?;
     let value = operation(left, right).ok_or_else(|| anyhow!(failure.to_string()))?;
-    stack.push(StackValue {
-        value_type: ValueType::U64,
-        word: word_from_u64(value),
-    });
+    stack.push(StackValue::scalar(ValueType::U64, word_from_u64(value)));
     Ok(())
 }
 

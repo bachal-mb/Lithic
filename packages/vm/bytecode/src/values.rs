@@ -1,4 +1,4 @@
-//! Candidate dynamic call-value envelope. Not accepted by the v11 VM yet.
+//! Candidate dynamic call-value envelope for v12 VM value adapters, not v11 calls.
 //! Fixed words retain their canonical validation; strings preserve exact UTF-8.
 use crate::{validate_word, ValueType};
 use anyhow::{bail, Result};
@@ -17,6 +17,12 @@ pub enum Value {
 
 /// Validates all bounds before allocating an encoded payload.
 pub fn encode(values: &[Value]) -> Result<Vec<u8>> {
+    let size = encoded_size(values)?;
+    encode_validated(values, size)
+}
+
+/// Validate without allocating an encoded copy.
+pub fn encoded_size(values: &[Value]) -> Result<usize> {
     if values.len() > MAX_VALUES {
         bail!("too many ABI values");
     }
@@ -38,6 +44,10 @@ pub fn encode(values: &[Value]) -> Result<Vec<u8>> {
             bail!("ABI envelope exceeds byte limit");
         }
     }
+    Ok(size)
+}
+
+fn encode_validated(values: &[Value], size: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(size);
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&(values.len() as u16).to_be_bytes());

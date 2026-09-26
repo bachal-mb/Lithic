@@ -153,9 +153,10 @@ deployment or block isolated technical development on another client message.
 
 ## Independent work still outstanding
 
-Executable string arguments/storage/returns/events and their gas schedule,
-contract-level child creation, ordered synchronous calls/return data,
+The local v12 candidate now executes string arguments/storage/returns/events
+with byte-dependent gas; dynamic host deployment/calls and source literals are
+still missing. Contract-level child creation, ordered synchronous calls/return data,
 adversarial persistence tests, release reproducibility and independent review
-remain unfinished. The UTF-8 codec and configurable token fixture are partial
+remain unfinished. The v12 VM and configurable token fixture are partial
 building blocks. Full frontend build and wallet integration also require the
 application repository; the supplied six-file package is not a full checkout.

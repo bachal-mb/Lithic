@@ -14,6 +14,8 @@ pub const MUTABLE_VERSION: u8 = 8;
 pub const REPEAT_VERSION: u8 = 9;
 pub const FAILURE_VERSION: u8 = 10;
 pub const VERSION: u8 = 11;
+/// Dynamic-value candidate; scalar programs continue to encode as v11.
+pub const STRING_VERSION: u8 = 12;
 pub const MAX_FUNCTIONS: usize = 1024;
 pub const MAX_PARAMETERS: usize = 64;
 pub const MAX_NAME_BYTES: usize = 255;
@@ -32,6 +34,7 @@ pub enum ValueType {
     Bool = 3,
     Address = 4,
     Bytes32 = 5,
+    String = 6,
 }
 
 impl ValueType {
@@ -42,6 +45,7 @@ impl ValueType {
             3 => Ok(Self::Bool),
             4 => Ok(Self::Address),
             5 => Ok(Self::Bytes32),
+            6 => Ok(Self::String),
             _ => bail!("unknown LithoVM value type {value}"),
         }
     }
@@ -53,6 +57,7 @@ impl ValueType {
             Self::Bool => "bool",
             Self::Address => "address",
             Self::Bytes32 => "bytes32",
+            Self::String => "string",
         }
     }
 }
@@ -197,6 +202,25 @@ struct ValidationSchema<'a> {
 }
 
 impl Program {
+    pub fn bytecode_version(&self) -> u8 {
+        let strings = self
+            .storage
+            .iter()
+            .any(|f| f.value_type == ValueType::String)
+            || self
+                .events
+                .iter()
+                .any(|e| e.fields.iter().any(|f| f.value_type == ValueType::String))
+            || self.functions.iter().any(|f| {
+                f.return_type == ValueType::String || f.parameters.contains(&ValueType::String)
+            });
+        if strings {
+            STRING_VERSION
+        } else {
+            VERSION
+        }
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>> {
         validate_storage(&self.storage)?;
         validate_maps(&self.maps)?;
@@ -205,7 +229,7 @@ impl Program {
         validate_functions(&self.functions, &self.storage, &self.maps, &self.events)?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC);
-        bytes.push(VERSION);
+        bytes.push(self.bytecode_version());
         push_u16(&mut bytes, self.storage.len())?;
         for field in &self.storage {
             push_u16(&mut bytes, field.name.len())?;
@@ -264,7 +288,7 @@ pub fn parse(bytes: &[u8]) -> Result<Program> {
         bail!("invalid LithoVM bytecode magic");
     }
     let version = reader.byte()?;
-    if !(LEGACY_VERSION..=VERSION).contains(&version) {
+    if !(LEGACY_VERSION..=STRING_VERSION).contains(&version) {
         bail!("unsupported LithoVM bytecode version {version}");
     }
     let storage = if version >= STORAGE_VERSION {
@@ -425,16 +449,21 @@ pub fn parse(bytes: &[u8]) -> Result<Program> {
         bail!("trailing bytes after LithoVM program");
     }
     validate_functions(&functions, &storage, &maps, &events)?;
-    Ok(Program {
+    let program = Program {
         storage,
         maps,
         events,
         functions,
-    })
+    };
+    if version < STRING_VERSION && program.bytecode_version() == STRING_VERSION {
+        bail!("string values require LithoVM v12");
+    }
+    Ok(program)
 }
 
 pub fn validate_word(value_type: ValueType, word: &[u8; 32]) -> Result<()> {
     match value_type {
+        ValueType::String => bail!("string cannot be represented by a scalar word"),
         ValueType::U64 if word[..24] != [0; 24] => bail!("non-canonical u64 value"),
         ValueType::Bool if word[..31] != [0; 31] || word[31] > 1 => {
             bail!("non-canonical bool value")
@@ -471,6 +500,9 @@ fn validate_maps(maps: &[MapField]) -> Result<()> {
         bail!("program exceeds {MAX_STORAGE_FIELDS} map fields");
     }
     for (index, map) in maps.iter().enumerate() {
+        if map.value_type == ValueType::String || map.key_types.contains(&ValueType::String) {
+            bail!("string map keys and values are unsupported");
+        }
         validate_name(&map.name, "map")?;
         if maps[..index].iter().any(|earlier| earlier.name == map.name) {
             bail!("duplicate LithoVM map field name '{}'", map.name);
@@ -1264,7 +1296,7 @@ mod tests {
         trailing.push(0);
         assert!(parse(&trailing).is_err());
         let mut version = bytes;
-        version[MAGIC.len()] = VERSION + 1;
+        version[MAGIC.len()] = STRING_VERSION + 1;
         assert!(parse(&version).is_err());
     }
 

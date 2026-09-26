@@ -169,6 +169,16 @@ impl<S: TransactionalState> TransactionalHost<S> {
                 })
             }
         };
+        // The host call/deploy request ABI is still scalar. Do not store code
+        // that this host cannot invoke, even when no initializer was requested.
+        if program.bytecode_version() >= lithovm_bytecode::STRING_VERSION {
+            return DeployOutcome::Failure(HostFailure {
+                kind: HostFailureKind::InvalidBytecode,
+                message: "dynamic bytecode requires a dynamic-value host adapter".into(),
+                gas_used: 0,
+                failed_contract: address,
+            });
+        }
         let mut entrypoints = BTreeMap::new();
         for function in &program.functions {
             if entrypoints

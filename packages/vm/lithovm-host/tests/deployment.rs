@@ -64,6 +64,21 @@ fn deterministic_address_is_domain_separated_and_canonical() {
 }
 
 #[test]
+fn scalar_host_rejects_dynamic_deployment_even_without_initializer() {
+    let bytes =
+        compile_bytecode("contract C { pub fn echo(name: string) -> string { return name; } }");
+    let mut request = request(bytes, address(7), 0);
+    request.initializer = None;
+    let mut host = TransactionalHost::new(InMemoryState::default());
+    let DeployOutcome::Failure(failure) = host.deploy(request) else {
+        panic!("stored unusable dynamic contract")
+    };
+    assert_eq!(failure.kind, HostFailureKind::InvalidBytecode);
+    assert_eq!(failure.gas_used, 0);
+    assert!(failure.message.contains("dynamic-value host adapter"));
+}
+
+#[test]
 fn deployment_preserves_prefunding_and_rejects_balance_overflow() {
     let deployer = address(7);
     let bytes = compile_bytecode(

@@ -8,7 +8,7 @@ use lithic_syntax::{Contract, Item, Type};
 use lithovm_bytecode::{
     function_selector, function_signature, EventDefinition, Function, Instruction, MapField,
     Program, ReturnValue, Statement, StorageField, ValueType, MAX_BLOCK_DEPTH, MAX_LOCALS,
-    MAX_STATEMENTS, VERSION,
+    MAX_STATEMENTS,
 };
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
@@ -226,8 +226,8 @@ fn compile_contract(contract: &Contract, source: &str) -> Result<Artifact, Compi
         compiler: "lithc".to_string(),
         compiler_version: env!("CARGO_PKG_VERSION").to_string(),
         contract_name: contract.name.clone(),
-        target: TARGET.to_string(),
-        bytecode_version: VERSION,
+        target: format!("lithovm-native-v{}", program.bytecode_version()),
+        bytecode_version: program.bytecode_version(),
         source_hash: keccak_hex(source.as_bytes()),
         code_hash: keccak_hex(&bytes),
         entrypoints,
@@ -303,6 +303,7 @@ fn lower_type(value: &Type) -> Result<ValueType, String> {
             "bool" => Ok(ValueType::Bool),
             "address" => Ok(ValueType::Address),
             "bytes32" => Ok(ValueType::Bytes32),
+            "string" => Ok(ValueType::String),
             other => Err(format!("type '{other}' has no native LithoVM v11 lowering")),
         },
         Type::Map(_, _) | Type::Vec(_) => Err("collection types are unsupported".to_string()),
@@ -334,6 +335,7 @@ fn lower_named_type(name: &str) -> Result<ValueType, String> {
         "bool" => Ok(ValueType::Bool),
         "address" => Ok(ValueType::Address),
         "bytes32" => Ok(ValueType::Bytes32),
+        "string" => Ok(ValueType::String),
         other => Err(format!("type '{other}' has no native LithoVM v11 lowering")),
     }
 }
@@ -1049,6 +1051,9 @@ fn parse_return(
 
 fn parse_constant(value: &str, value_type: ValueType) -> Result<[u8; 32], String> {
     match value_type {
+        ValueType::String => {
+            Err("string literals are not yet supported; pass a string parameter".to_string())
+        }
         ValueType::Bool => match value {
             "true" => Ok(word_from_u64(1)),
             "false" => Ok([0; 32]),
