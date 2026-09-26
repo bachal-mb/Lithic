@@ -26,9 +26,9 @@ integration. The recommended first harness remains nonpayable, with no native-to
 callbacks, no live registration, and no claim of ordinary ERC-20 compatibility.
 These are chain-owner decisions, not new requests for Amir's frontend repository.
 Local experiments remain possible; they do not freeze interoperable consensus
-semantics or authorize activation. Under the current ASAP critical-path scope,
-do not expand a provisional interface into chain/frontend integration before this
-decision is recorded.
+semantics or authorize activation. The isolated, test-only StateDB/EVM harness
+is [documented separately](NATIVE_CHAIN_LAB_EVIDENCE_2026_09_26.md); do not
+register it in the chain app or expose a frontend/RPC path before the decision.
 
 Recommend an EVM precompile gateway over a shared native keeper/execution
 core for the first Litho Finance integration. This supersedes the earlier
@@ -51,20 +51,18 @@ completed integration.
   MultiStoreSnapshot, readOnly checks, gas metering and AddJournalEntries.
   `x/evm/statedb/journal.go` implements precompileCallChange.Revert;
   `precompiles/staking/staking.go` demonstrates charging gas and journalling.
-- The local lab has unrelated uncommitted changes and an older go.mod than
-  the Lithosphere release manifest. It is inspection evidence only. Rebuild
-  a clean source tree from the manifest and patch set before implementation.
-- The Rust TransactionalState seam commits an entire native call tree. Native
-  calls remain deferred, with no argument/return-data channel. CallRequest.value
-  describes value without originating balance transfer, whereas DeployRequest
-  transfers it. The adapter must reconcile this difference explicitly.
+- The isolated lab is assembled from pinned Evmos/SDK sources and the six
+  hash-verified release patches. It is not the running Makalu or mainnet app.
+- The Rust TransactionalState seam commits an entire native call tree. The
+  v13/v14 path supports synchronous typed calls and child return data; native
+  to EVM calls, payable bridging and catchable child failure remain open.
 - Amir's supplied factory creates tokens; it does not pull existing ERC-20s.
   Its frontend needs an actual transaction hash and TokenCreated receipt.
 
-This is a source-based design review. Current web documentation retrieval
-failed. No live RPC probe, wallet experiment, FFI build, benchmark or cross-VM
-rollback test was performed. Existing precompiles provide mechanisms, not
-proof of correctness for a new gateway with Lithosphere's patches.
+The review originally preceded the isolated FFI/StateDB lab. The dated lab
+evidence now proves local EVM-frame rollback with a test-only precompile; it
+does not prove live RPC, wallet signing, Makalu operation, production gas or
+security correctness.
 
 ### Route comparison
 
@@ -136,7 +134,7 @@ proof of correctness for a new gateway with Lithosphere's patches.
 | Case | Required result |
 | --- | --- |
 | Native creation succeeds, outer EVM reverts or runs out of gas | No native code/storage/log/balance/counter effects survive; normal transaction fee/nonce effects follow chain rules |
-| Failed child caught by parent | Failed frame rolls back, parent can continue with deterministic remaining gas |
+| Failed child under first fail-whole profile | Entire native transaction rolls back with deterministic remaining gas; catchable frames require separate approval |
 | Two successful creates in one transaction | Distinct addresses; correct creator and counter |
 | Spoofed creator, wrapper, delegate and static call modes | No tx.origin escalation; correct caller and write restrictions |
 | Prefunding, balance overflow, reserved/code collisions | Preserve funds and reject invalid creation atomically |
@@ -180,11 +178,10 @@ deployment or block isolated technical development on another client message.
 
 ## Independent work still outstanding
 
-The local v12 candidate now executes string arguments/storage/returns/events
-with byte-dependent gas and explicit dynamic host deploy/call APIs. Source
-literals, contract-level child creation, ordered synchronous calls/return data,
-adversarial persistence tests, release reproducibility and independent review
-remain unfinished. The v12 VM and configurable token fixture are partial
-building blocks. The full frontend is now checked out and its local safety
-branch passes build/typecheck/lint and service tests. Native wallet integration
-and browser/on-chain tests remain outstanding.
+The local v12-v14 candidate now executes strings, typed synchronous native
+calls and atomic child creation. Bounded persisted storage and a versioned
+Go/Rust FFI have isolated StateDB and EVM-call tests. Production ABI/gas rules,
+release reproducibility, independent review, signed deployment, live RPC and
+Makalu recovery remain unfinished. The full frontend is checked out and its
+local safety branch passes build/typecheck/lint and service tests. Native
+wallet integration and on-chain tests remain outstanding.

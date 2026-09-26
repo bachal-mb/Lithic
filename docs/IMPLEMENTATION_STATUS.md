@@ -38,6 +38,11 @@ tokens across all 16 feature profiles with creator-owned supply. Salt policy,
 consensus pricing, persisted creation receipts, security review and native chain
 integration remain open; this is not a production factory release.
 
+An [isolated native-chain lab](NATIVE_CHAIN_LAB_EVIDENCE_2026_09_26.md) now tests
+bounded persisted storage, a Rust C ABI, Go StateDB rollback/commit/reload and
+an ephemeral EVM precompile call against pinned Evmos/SDK sources. This is not
+an app registration, deployed RPC, Makalu contract or production gas/ABI rule.
+
 Install Rust and the platform C/C++ linker, then run from this repository:
 
 ```sh

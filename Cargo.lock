@@ -1338,9 +1338,13 @@ name = "lithovm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
+ "lithic-lithovm",
  "lithovm-bytecode",
  "lithovm-receipts",
  "lithovm-zk-verifier",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1350,6 +1354,19 @@ dependencies = [
  "anyhow",
  "hex",
  "sha3",
+]
+
+[[package]]
+name = "lithovm-ffi"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "lithic-lithovm",
+ "lithovm",
+ "lithovm-bytecode",
+ "lithovm-host",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

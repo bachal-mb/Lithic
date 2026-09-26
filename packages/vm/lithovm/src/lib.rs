@@ -8,6 +8,7 @@ use lithovm_zk_verifier::{StubVerifier, ZkVerifier};
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+mod persistence;
 
 /// Minimal LithoVM execution context (scaffold).
 pub struct Vm {
