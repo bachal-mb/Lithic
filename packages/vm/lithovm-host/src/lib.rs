@@ -2,7 +2,7 @@ use lithovm::{
     EventRecord, ExecutionContext, ExecutionFailure, ExecutionOutcome, ExecutionResult,
     FailureKind, Storage, Vm,
 };
-use lithovm_bytecode::{function_selector, parse};
+use lithovm_bytecode::{function_selector, parse, values::Value};
 use sha3::{Digest, Keccak256};
 use std::collections::BTreeMap;
 
@@ -18,17 +18,17 @@ pub struct DeployedContract {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Initializer {
+pub struct Initializer<V = [u8; 32]> {
     pub function: String,
-    pub arguments: Vec<[u8; 32]>,
+    pub arguments: Vec<V>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeployRequest {
+pub struct DeployRequest<V = [u8; 32]> {
     pub deployer: Address,
     pub nonce: u64,
     pub bytecode: Vec<u8>,
-    pub initializer: Option<Initializer>,
+    pub initializer: Option<Initializer<V>>,
     pub value: [u8; 32],
     pub gas_limit: u64,
     pub block_height: u64,
@@ -37,25 +37,25 @@ pub struct DeployRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeploySuccess {
+pub struct DeploySuccess<V = [u8; 32]> {
     pub contract: Address,
     pub code_hash: [u8; 32],
-    pub initializer_result: Option<ExecutionResult>,
+    pub initializer_result: Option<ExecutionResult<V>>,
     pub gas_used: u64,
-    pub events: Vec<CommittedEvent>,
+    pub events: Vec<CommittedEvent<V>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DeployOutcome {
-    Success(DeploySuccess),
+pub enum DeployOutcome<V = [u8; 32]> {
+    Success(DeploySuccess<V>),
     Failure(HostFailure),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CallRequest {
+pub struct CallRequest<V = [u8; 32]> {
     pub contract: Address,
     pub function: String,
-    pub arguments: Vec<[u8; 32]>,
+    pub arguments: Vec<V>,
     pub gas_limit: u64,
     pub caller: Address,
     pub value: [u8; 32],
@@ -65,16 +65,16 @@ pub struct CallRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommittedEvent {
+pub struct CommittedEvent<V = [u8; 32]> {
     pub contract: Address,
-    pub event: EventRecord,
+    pub event: EventRecord<V>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostSuccess {
-    pub result: ExecutionResult,
+pub struct HostSuccess<V = [u8; 32]> {
+    pub result: ExecutionResult<V>,
     pub gas_used: u64,
-    pub events: Vec<CommittedEvent>,
+    pub events: Vec<CommittedEvent<V>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,8 +99,8 @@ pub struct HostFailure {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HostOutcome {
-    Success(HostSuccess),
+pub enum HostOutcome<V = [u8; 32]> {
+    Success(HostSuccess<V>),
     Failure(HostFailure),
 }
 
@@ -155,6 +155,15 @@ impl<S> TransactionalHost<S> {
 
 impl<S: TransactionalState> TransactionalHost<S> {
     pub fn deploy(&mut self, request: DeployRequest) -> DeployOutcome {
+        self.deploy_impl(request)
+    }
+
+    /// Local dynamic-value deployment candidate; not a broadcast API.
+    pub fn deploy_values(&mut self, request: DeployRequest<Value>) -> DeployOutcome<Value> {
+        self.deploy_impl(request)
+    }
+
+    fn deploy_impl<V: HostValue>(&mut self, request: DeployRequest<V>) -> DeployOutcome<V> {
         let code_hash = code_hash(&request.bytecode);
         let address =
             contract_address(request.deployer, request.nonce, code_hash, request.chain_id);
@@ -169,9 +178,8 @@ impl<S: TransactionalState> TransactionalHost<S> {
                 })
             }
         };
-        // The host call/deploy request ABI is still scalar. Do not store code
-        // that this host cannot invoke, even when no initializer was requested.
-        if program.bytecode_version() >= lithovm_bytecode::STRING_VERSION {
+        // Scalar entry points must not silently accept dynamic code.
+        if !V::DYNAMIC && program.bytecode_version() >= lithovm_bytecode::STRING_VERSION {
             return DeployOutcome::Failure(HostFailure {
                 kind: HostFailureKind::InvalidBytecode,
                 message: "dynamic bytecode requires a dynamic-value host adapter".into(),
@@ -261,7 +269,10 @@ impl<S: TransactionalState> TransactionalHost<S> {
             return DeployOutcome::Failure(failure);
         }
 
-        let mut events = Vec::new();
+        let mut events = EventJournal {
+            events: Vec::new(),
+            value_bytes: 0,
+        };
         let mut active_contracts = vec![address];
         let initialized = if let Some(initializer) = request.initializer {
             let frame = FrameRequest {
@@ -298,13 +309,22 @@ impl<S: TransactionalState> TransactionalHost<S> {
                 code_hash,
                 initializer_result,
                 gas_used,
-                events,
+                events: events.events,
             }),
             Err(message) => DeployOutcome::Failure(state_failure(message, gas_used, address)),
         }
     }
 
     pub fn execute(&mut self, request: CallRequest) -> HostOutcome {
+        self.execute_impl(request)
+    }
+
+    /// Executes typed values against a transaction-scoped local state adapter.
+    pub fn execute_values(&mut self, request: CallRequest<Value>) -> HostOutcome<Value> {
+        self.execute_impl(request)
+    }
+
+    fn execute_impl<V: HostValue>(&mut self, request: CallRequest<V>) -> HostOutcome<V> {
         let mut transaction = match self.state.begin_transaction() {
             Ok(transaction) => transaction,
             Err(message) => {
@@ -316,7 +336,10 @@ impl<S: TransactionalState> TransactionalHost<S> {
                 })
             }
         };
-        let mut events = Vec::new();
+        let mut events = EventJournal {
+            events: Vec::new(),
+            value_bytes: 0,
+        };
         let mut active_contracts = vec![request.contract];
         let frame = FrameRequest {
             contract: request.contract,
@@ -341,7 +364,7 @@ impl<S: TransactionalState> TransactionalHost<S> {
                 Ok(()) => HostOutcome::Success(HostSuccess {
                     result,
                     gas_used,
-                    events,
+                    events: events.events,
                 }),
                 Err(message) => HostOutcome::Failure(HostFailure {
                     kind: HostFailureKind::State,
@@ -377,10 +400,75 @@ pub fn contract_address(
     address
 }
 
-struct FrameRequest {
+// Private dispatch keeps scalar APIs source-compatible while sharing atomicity,
+// balance handling, code verification and recursive failure propagation.
+trait HostValue: Clone + Sized {
+    const DYNAMIC: bool;
+    fn encoded_size(value: &Self) -> usize;
+    fn execute(
+        vm: &Vm,
+        frame: &FrameRequest<Self>,
+        contract: &mut DeployedContract,
+        context: &ExecutionContext,
+    ) -> ExecutionOutcome<Self>;
+}
+
+impl HostValue for [u8; 32] {
+    const DYNAMIC: bool = false;
+    fn encoded_size(_: &Self) -> usize {
+        33
+    }
+    fn execute(
+        vm: &Vm,
+        frame: &FrameRequest<Self>,
+        contract: &mut DeployedContract,
+        context: &ExecutionContext,
+    ) -> ExecutionOutcome<Self> {
+        vm.execute_transactionally(
+            &contract.bytecode,
+            &frame.function,
+            &frame.arguments,
+            frame.gas_limit,
+            &mut contract.storage,
+            context,
+        )
+    }
+}
+
+impl HostValue for Value {
+    const DYNAMIC: bool = true;
+    fn encoded_size(value: &Self) -> usize {
+        match value {
+            Value::Word(_, _) => 33,
+            Value::String(text) => 3 + text.len(),
+        }
+    }
+    fn execute(
+        vm: &Vm,
+        frame: &FrameRequest<Self>,
+        contract: &mut DeployedContract,
+        context: &ExecutionContext,
+    ) -> ExecutionOutcome<Self> {
+        vm.execute_values_transactionally(
+            &contract.bytecode,
+            &frame.function,
+            &frame.arguments,
+            frame.gas_limit,
+            &mut contract.storage,
+            context,
+        )
+    }
+}
+
+struct EventJournal<V> {
+    events: Vec<CommittedEvent<V>>,
+    value_bytes: usize,
+}
+
+struct FrameRequest<V> {
     contract: Address,
     function: String,
-    arguments: Vec<[u8; 32]>,
+    arguments: Vec<V>,
     gas_limit: u64,
     caller: Address,
     value: [u8; 32],
@@ -390,13 +478,13 @@ struct FrameRequest {
     depth: u16,
 }
 
-fn execute_frame<T: StateTransaction>(
+fn execute_frame<T: StateTransaction, V: HostValue>(
     vm: &Vm,
     state: &mut T,
-    frame: FrameRequest,
-    committed_events: &mut Vec<CommittedEvent>,
+    frame: FrameRequest<V>,
+    committed_events: &mut EventJournal<V>,
     active_contracts: &mut Vec<Address>,
-) -> Result<(ExecutionResult, u64), HostFailure> {
+) -> Result<(ExecutionResult<V>, u64), HostFailure> {
     let mut contract = load_contract(state, frame.contract, 0)?;
     let contract_balance = load_balance(state, frame.contract, 0, frame.contract)?;
     let context = ExecutionContext {
@@ -408,14 +496,7 @@ fn execute_frame<T: StateTransaction>(
         contract_balance,
         call_depth: frame.depth,
     };
-    let result = match vm.execute_transactionally(
-        &contract.bytecode,
-        &frame.function,
-        &frame.arguments,
-        frame.gas_limit,
-        &mut contract.storage,
-        &context,
-    ) {
+    let result = match V::execute(vm, &frame, &mut contract, &context) {
         ExecutionOutcome::Success(result) => result,
         ExecutionOutcome::Failure(failure) => {
             return Err(vm_failure(frame.contract, failure));
@@ -426,10 +507,30 @@ fn execute_frame<T: StateTransaction>(
     // LithoVM calls are deferred effects. Persist the caller's storage before
     // entering children so reentrant frames observe checks/effects updates.
     store_contract(state, frame.contract, contract, total_gas)?;
-    committed_events.extend(result.events.iter().cloned().map(|event| CommittedEvent {
-        contract: frame.contract,
-        event,
-    }));
+    if V::DYNAMIC {
+        for event in &result.events {
+            let size = 7 + event
+                .fields
+                .iter()
+                .map(|(_, _, value)| V::encoded_size(value))
+                .sum::<usize>();
+            if committed_events.value_bytes + size > lithovm_bytecode::values::MAX_ENVELOPE_BYTES {
+                return Err(HostFailure {
+                    kind: HostFailureKind::Vm(FailureKind::Trap),
+                    message: "host event output exceeds byte limit".into(),
+                    gas_used: total_gas,
+                    failed_contract: frame.contract,
+                });
+            }
+            committed_events.value_bytes += size;
+        }
+    }
+    committed_events
+        .events
+        .extend(result.events.iter().cloned().map(|event| CommittedEvent {
+            contract: frame.contract,
+            event,
+        }));
 
     for transfer in &result.transfers {
         let contract_balance = load_balance(state, frame.contract, total_gas, frame.contract)?;

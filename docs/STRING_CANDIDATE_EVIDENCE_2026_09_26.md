@@ -23,8 +23,19 @@ Tests exercise exact Unicode/NUL/empty/4096-byte values; compiler locals,
 storage, events and returns; equality without normalization; gas by UTF-8 byte;
 all insufficient gas budgets of a representative stateful call; revert and
 recovery; oversized arguments/output; downgrade/truncation rejection; and
-continued v11 scalar output. Dynamic host calls/deployment, source literals,
-factories and native chain execution remain unimplemented. See
+continued v11 scalar output. Source literals, factories, ordered calls and
+native chain execution remain unimplemented. See
 [the candidate specification](LITHOVM_DYNAMIC_VALUES_V1.md).
+
+## Dynamic host follow-up
+
+Explicit `deploy_values`/`execute_values` now share the scalar host's transaction
+engine. Three additional host tests cover atomic Unicode initialization and
+prefunding, every insufficient gas budget for deployment, initializer revert,
+collision, child revert/OOG, transaction-wide event limits, recovery, and the
+v12 finance-token metadata fixture across 16 initialization profiles. No
+contract-level calldata/return-data channel or factory creation was added.
+The compiler fuzz smoke above predates this host-only follow-up and is not
+evidence of host fuzz coverage.
 
 No LAX or production deployment, live RPC change, or MultX modification occurred.

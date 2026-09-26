@@ -18,9 +18,11 @@ The SDK compiler, formatter and linter wrappers invoke the Rust commands from th
 The local [v12 string candidate](LITHOVM_DYNAMIC_VALUES_V1.md) additionally
 compiles and executes string parameters, locals, scalar storage, events,
 equality and returns through the explicit dynamic-value VM API. It includes
-byte limits, byte-dependent gas and rollback tests. Source string literals,
-string maps, dynamic host deployment/calls and native chain integration remain
-unfinished. The existing scalar host rejects v12 deployment; this candidate is
+byte limits, byte-dependent gas and rollback tests. Explicit dynamic host APIs
+support atomic initialization, typed top-level calls/results and transaction-wide
+event limits; scalar APIs still reject dynamic bytecode. Source string literals,
+string maps, ordered calls with arguments/return data, factories and native chain
+integration remain unfinished. This candidate is
 not included in preview.3 and is not a production release.
 
 Install Rust and the platform C/C++ linker, then run from this repository:

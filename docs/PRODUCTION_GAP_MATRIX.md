@@ -51,9 +51,13 @@ scalar storage, events, equality and returns under bytecode v12, with bounded
 UTF-8 values, byte-dependent gas and transactional rollback tests. Scalar
 programs still emit v11. See [exact supported behavior and
 limits](LITHOVM_DYNAMIC_VALUES_V1.md). This advances the language, storage,
-events and ABI rows; it does not close any production row. The host still has
-scalar requests/results and rejects v12 deployment. String literals, dynamic
-host initialization, factories and consensus integration remain necessary.
+events and ABI rows; it does not close any production row. The host now has
+explicit dynamic-value deploy/call APIs alongside the scalar APIs. Dynamic
+initialization is atomic; nested failures roll back strings and value transfers;
+transaction-wide event limits are enforced. A separate v12 finance-token fixture
+adds name/symbol and passes atomic initialization/getter tests for all 16 feature
+profiles. Source literals, factories, ordered calls and consensus integration
+remain necessary.
 
 ### Closure sequence
 

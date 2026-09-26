@@ -37,6 +37,24 @@ failure kind, failing contract and total gas through the failing frame.
 
 ## Nested-call semantics
 
+### Dynamic values (local v12 candidate)
+
+`deploy_values(DeployRequest<Value>)` and `execute_values(CallRequest<Value>)`
+carry bounded typed values through the same transactional implementation.
+Scalar entry points remain source-compatible and reject dynamic bytecode.
+Initialization strings, storage, events, balances and code commit together or
+are all discarded. Successful top-level calls return a `Value`; emitted events
+retain the originating contract and exact UTF-8 fields. Dynamic transactions
+are capped at 65536 bytes of encoded event-value envelopes across all frames.
+This does not change deferred child-call ordering or provide call arguments and
+return data to contract code. See [string semantics](LITHOVM_DYNAMIC_VALUES_V1.md).
+
+Tests cover atomic Unicode initialization, prefunding, every insufficient gas
+budget of a representative deployment, initializer revert, collision, child
+revert/OOG and cross-frame event-limit rollback followed by successful recovery.
+
+### Deferred calls
+
 Native v10 call instructions stage target, selector and value. Host v1:
 
 1. executes and stages the caller frame;

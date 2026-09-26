@@ -42,8 +42,12 @@ Metadata currently enters through parameters, not literals.
 APIs reject dynamic programs. String storage starts empty, supports exact UTF-8
 equality and participates in clone-and-commit rollback. Internal shared string
 buffers avoid repeated allocations for locals; no string is truncated or packed
-into a scalar word. The scalar host rejects v12 deployment, including requests
-without an initializer, until its dynamic request/result adapter is implemented.
+into a scalar word. The scalar host APIs reject v12 deployment, including
+requests without an initializer. Explicit `deploy_values` and `execute_values`
+host APIs now carry `Value` arguments/results and typed events through atomic
+deployment and deferred call trees. Their event-value envelope budget is also
+65536 bytes across the entire transaction, not just each frame. Child call
+intents remain zero-argument and do not expose return data to the caller.
 
 Candidate additional gas is one unit per UTF-8 byte on argument ingress,
 parameter/local/storage reads, storage writes, event/return materialization and
@@ -61,8 +65,8 @@ events, exact gas, version downgrade, scalar compatibility, event-output limits,
 revert and every insufficient gas budget for a representative stateful call.
 The source/artifact verifier rebuilds v12 too; this is not on-chain verification.
 
-Remaining before Amir's factory can use this path: dynamic host deployment and
-call interfaces; source literals and approved collection profile; ordered
+Remaining before Amir's factory can use this path: source literals and an
+approved collection profile; ordered
 synchronous calls and contract creation; persistent chain/gateway and RPC
 integration; independent review and Makalu acceptance. No native deployment
 availability or production readiness is established by these local tests.
