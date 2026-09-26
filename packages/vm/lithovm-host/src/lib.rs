@@ -222,7 +222,19 @@ impl<S: TransactionalState> TransactionalHost<S> {
         ) {
             return DeployOutcome::Failure(failure);
         }
-        if let Err(failure) = store_balance(&mut transaction, address, request.value, 0, address) {
+        let prior_balance = match load_balance(&transaction, address, 0, address) {
+            Ok(balance) => balance,
+            Err(failure) => return DeployOutcome::Failure(failure),
+        };
+        let Some(contract_balance) = credit(prior_balance, request.value) else {
+            return DeployOutcome::Failure(state_failure(
+                "deployment recipient balance overflow".into(),
+                0,
+                address,
+            ));
+        };
+        if let Err(failure) = store_balance(&mut transaction, address, contract_balance, 0, address)
+        {
             return DeployOutcome::Failure(failure);
         }
         if let Err(failure) = store_contract(

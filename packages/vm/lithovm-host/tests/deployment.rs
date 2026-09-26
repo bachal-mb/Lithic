@@ -64,6 +64,52 @@ fn deterministic_address_is_domain_separated_and_canonical() {
 }
 
 #[test]
+fn deployment_preserves_prefunding_and_rejects_balance_overflow() {
+    let deployer = address(7);
+    let bytes = compile_bytecode(
+        "contract C { pub fn initialize(owner: address) -> bool { return true; } }",
+    );
+    let target = contract_address(deployer, 15, code_hash(&bytes), 700_777);
+    let mut state = InMemoryState::default();
+    state.set_balance(deployer, word(100));
+    state.set_balance(target, word(40));
+    let mut host = TransactionalHost::new(state);
+    assert!(matches!(
+        host.deploy(request(bytes.clone(), deployer, 15)),
+        DeployOutcome::Success(_)
+    ));
+    assert_eq!(host.state().balance(&target), word(65));
+    assert_eq!(host.state().balance(&deployer), word(75));
+
+    let overflow_target = contract_address(deployer, 16, code_hash(&bytes), 700_777);
+    host.state_mut().set_balance(overflow_target, [255; 32]);
+    let before = host.state().clone();
+    assert!(matches!(
+        host.deploy(request(bytes, deployer, 16)),
+        DeployOutcome::Failure(_)
+    ));
+    assert_eq!(host.state(), &before);
+}
+
+#[test]
+fn reverting_initializer_preserves_prefunding() {
+    let deployer = address(7);
+    let bytes =
+        compile_bytecode("contract C { pub fn initialize(owner: address) -> bool { revert(); } }");
+    let target = contract_address(deployer, 17, code_hash(&bytes), 700_777);
+    let mut state = InMemoryState::default();
+    state.set_balance(deployer, word(100));
+    state.set_balance(target, word(40));
+    let before = state.clone();
+    let mut host = TransactionalHost::new(state);
+    assert!(matches!(
+        host.deploy(request(bytes, deployer, 17)),
+        DeployOutcome::Failure(_)
+    ));
+    assert_eq!(host.state(), &before);
+}
+
+#[test]
 fn lax_deploy_and_initialize_commit_atomically() {
     let deployer = address(7);
     let bytecode = compile_bytecode(include_str!(
