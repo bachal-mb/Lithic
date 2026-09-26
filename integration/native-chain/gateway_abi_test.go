@@ -3,6 +3,7 @@ package nativechain
 import (
 	"bytes"
 	"encoding/hex"
+	"strconv"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -79,5 +80,73 @@ func TestGatewayABIRejectsMalleableAndOversizedPayloads(t *testing.T) {
 	}
 	if _, err := DecodeGatewayResult(append(result, 0)); err == nil {
 		t.Fatal("accepted trailing result bytes")
+	}
+}
+
+func FuzzGatewayABICanonical(f *testing.F) {
+	selector := crypto.Keccak256Hash([]byte("initialize(u64)"))
+	deploy, err := EncodeGatewayDeploy([]byte{1, 2, 3}, selector, []byte{4, 5})
+	if err != nil {
+		f.Fatal(err)
+	}
+	call, err := EncodeGatewayCall(common.HexToAddress("0x09"), selector, []byte{6, 7})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(deploy)
+	f.Add(call)
+	f.Add([]byte{1, 2, 3, 4})
+	f.Fuzz(func(t *testing.T, input []byte) {
+		request, err := DecodeGatewayInput(input)
+		if err != nil {
+			return
+		}
+		selectorBytes, err := hex.DecodeString((*request.Selector)[2:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var selected [32]byte
+		copy(selected[:], selectorBytes)
+		arguments, err := hex.DecodeString(request.Arguments[2:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reencoded []byte
+		if request.Operation == "deploy" {
+			code, err := hex.DecodeString((*request.Bytecode)[2:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			reencoded, err = EncodeGatewayDeploy(code, selected, arguments)
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			reencoded, err = EncodeGatewayCall(common.HexToAddress(*request.Contract), selected, arguments)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !bytes.Equal(input, reencoded) {
+			t.Fatal("accepted noncanonical ABI")
+		}
+	})
+}
+
+func BenchmarkGatewayDecode(b *testing.B) {
+	selector := crypto.Keccak256Hash([]byte("initialize(u64)"))
+	for _, size := range []int{128, 65536} {
+		payload, err := EncodeGatewayDeploy(bytes.Repeat([]byte{1}, size), selector, []byte{1, 2, 3})
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			b.SetBytes(int64(len(payload)))
+			for i := 0; i < b.N; i++ {
+				if _, err := DecodeGatewayInput(payload); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
