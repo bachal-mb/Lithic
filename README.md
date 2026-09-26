@@ -175,12 +175,15 @@ The native v10 target includes typed contract constants, gas-bounded repeat loop
 contract-call intents and native-value transfers, typed event emission,
 explicit message, block and chain context, transactional scalar storage,
 structured branches, checked `u64` expressions and explicit transactional
-`require`/`revert` failures. Read
+`require`/`revert` failures. A transactional host conformance adapter adds
+structured failure/gas outcomes, atomic nested zero-argument calls, balance
+commit and a fail-closed reentrancy policy. Read
 [EVM backend v1](docs/EVM_BACKEND_V1.md) and
 [Native LithoVM ABI v10](docs/LITHOVM_ABI_V10.md) and
+[LithoVM transactional host v1](docs/LITHOVM_HOST_V1.md) and
 [Implementation status](docs/IMPLEMENTATION_STATUS.md) for exact capabilities
-and LEP100-15 status. Synchronous calls, collection storage and LEP100-15
-execution remain under development.
+and LEP100-15 status. Call calldata/return data, collection storage and
+LEP100-15 execution remain under development.
 
 ---
 

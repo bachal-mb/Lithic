@@ -1350,6 +1350,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lithovm-host"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "lithic-lithovm",
+ "lithovm",
+]
+
+[[package]]
 name = "lithovm-ir"
 version = "0.1.0"
 dependencies = [

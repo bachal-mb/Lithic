@@ -1,0 +1,12 @@
+[package]
+name = "lithovm-host"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+lithovm = { path = "../lithovm" }
+
+[dev-dependencies]
+hex = "0.4"
+lithic-lithovm = { path = "../../compiler/lithic-lithovm" }

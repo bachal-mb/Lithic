@@ -5,6 +5,7 @@ use lithovm_bytecode::{
 use lithovm_receipts::ReceiptV1;
 use lithovm_zk_verifier::{StubVerifier, ZkVerifier};
 use std::collections::BTreeMap;
+use std::fmt::{Display, Formatter};
 
 /// Minimal LithoVM execution context (scaffold).
 pub struct Vm {
@@ -20,6 +21,50 @@ pub struct ExecutionResult {
     pub transfers: Vec<NativeTransfer>,
     pub calls: Vec<ContractCall>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureKind {
+    InvalidRequest,
+    Revert,
+    OutOfGas,
+    Trap,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionFailure {
+    pub kind: FailureKind,
+    pub message: String,
+    pub gas_used: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExecutionOutcome {
+    Success(ExecutionResult),
+    Failure(ExecutionFailure),
+}
+
+#[derive(Debug)]
+struct ClassifiedFault {
+    kind: FailureKind,
+    message: String,
+}
+
+impl ClassifiedFault {
+    fn new(kind: FailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl Display for ClassifiedFault {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ClassifiedFault {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventRecord {
@@ -101,6 +146,7 @@ impl Vm {
             bail!("stateful LithoVM program requires execute_with_storage");
         }
         let mut storage = Storage::default();
+        let mut gas_used = 0;
         execute_program(
             &program,
             function_name,
@@ -108,6 +154,7 @@ impl Vm {
             gas_limit,
             &mut storage,
             None,
+            &mut gas_used,
         )
     }
 
@@ -125,6 +172,7 @@ impl Vm {
         }
         validate_context(context)?;
         let mut storage = Storage::default();
+        let mut gas_used = 0;
         execute_program(
             &program,
             function_name,
@@ -132,6 +180,7 @@ impl Vm {
             gas_limit,
             &mut storage,
             Some(context),
+            &mut gas_used,
         )
     }
 
@@ -146,6 +195,7 @@ impl Vm {
         let program = parse(bytes)?;
         let mut staged = storage.clone();
         prepare_storage(&program, &mut staged)?;
+        let mut gas_used = 0;
         let result = execute_program(
             &program,
             function_name,
@@ -153,6 +203,7 @@ impl Vm {
             gas_limit,
             &mut staged,
             None,
+            &mut gas_used,
         )?;
         *storage = staged;
         Ok(result)
@@ -171,6 +222,7 @@ impl Vm {
         validate_context(context)?;
         let mut staged = storage.clone();
         prepare_storage(&program, &mut staged)?;
+        let mut gas_used = 0;
         let result = execute_program(
             &program,
             function_name,
@@ -178,9 +230,45 @@ impl Vm {
             gas_limit,
             &mut staged,
             Some(context),
+            &mut gas_used,
         )?;
         *storage = staged;
         Ok(result)
+    }
+
+    /// Execute a stateful call and return a structured, deterministic outcome.
+    /// Storage is committed only when execution succeeds.
+    pub fn execute_transactionally(
+        &self,
+        bytes: &[u8],
+        function_name: &str,
+        arguments: &[[u8; 32]],
+        gas_limit: u64,
+        storage: &mut Storage,
+        context: &ExecutionContext,
+    ) -> ExecutionOutcome {
+        let mut gas_used = 0;
+        let result = (|| {
+            let program = parse(bytes)?;
+            validate_context(context)?;
+            let mut staged = storage.clone();
+            prepare_storage(&program, &mut staged)?;
+            let result = execute_program(
+                &program,
+                function_name,
+                arguments,
+                gas_limit,
+                &mut staged,
+                Some(context),
+                &mut gas_used,
+            )?;
+            *storage = staged;
+            Ok(result)
+        })();
+        match result {
+            Ok(result) => ExecutionOutcome::Success(result),
+            Err(error) => ExecutionOutcome::Failure(classify_failure(error, gas_used)),
+        }
     }
 
     /// Validate a receipt signature/zk-proof at a high level (scaffold).
@@ -208,6 +296,7 @@ fn execute_program(
     gas_limit: u64,
     storage: &mut Storage,
     context: Option<&ExecutionContext>,
+    observed_gas: &mut u64,
 ) -> Result<ExecutionResult> {
     let function = program
         .functions
@@ -235,8 +324,14 @@ fn execute_program(
         .and_then(|gas| gas.checked_add(INSTRUCTION_GAS.saturating_mul(instruction_count)))
         .ok_or_else(|| anyhow!("gas calculation overflow"))?;
     if gas_limit < gas_used {
-        bail!("out of gas: requires {gas_used}, limit is {gas_limit}");
+        *observed_gas = gas_limit;
+        return Err(ClassifiedFault::new(
+            FailureKind::OutOfGas,
+            format!("out of gas: requires {gas_used}, limit is {gas_limit}"),
+        )
+        .into());
     }
+    *observed_gas = gas_used;
     let mut environment = RuntimeEnvironment {
         storage_fields: &program.storage,
         event_definitions: &program.events,
@@ -266,9 +361,12 @@ fn execute_program(
                 arguments,
                 &function.parameters,
                 function.return_type,
-                gas_used,
-                gas_limit,
+                GasMeter {
+                    used: gas_used,
+                    limit: gas_limit,
+                },
                 &mut environment,
+                observed_gas,
             )
         }
     };
@@ -280,6 +378,22 @@ fn execute_program(
         transfers: environment.transfers,
         calls: environment.calls,
     })
+}
+
+fn classify_failure(error: anyhow::Error, gas_used: u64) -> ExecutionFailure {
+    let message = error.to_string();
+    let kind = if let Some(fault) = error.downcast_ref::<ClassifiedFault>() {
+        fault.kind
+    } else if gas_used == 0 {
+        FailureKind::InvalidRequest
+    } else {
+        FailureKind::Trap
+    };
+    ExecutionFailure {
+        kind,
+        message,
+        gas_used,
+    }
 }
 
 fn validate_context(context: &ExecutionContext) -> Result<()> {
@@ -481,13 +595,19 @@ struct GasMeter {
 
 impl GasMeter {
     fn charge(&mut self, amount: u64) -> Result<()> {
-        self.used = self
+        let attempted = self
             .used
             .checked_add(amount)
             .ok_or_else(|| anyhow!("gas calculation overflow"))?;
-        if self.used > self.limit {
-            bail!("out of gas: used {}, limit is {}", self.used, self.limit);
+        if attempted > self.limit {
+            self.used = self.limit;
+            return Err(ClassifiedFault::new(
+                FailureKind::OutOfGas,
+                format!("out of gas: attempted {attempted}, limit is {}", self.limit),
+            )
+            .into());
         }
+        self.used = attempted;
         Ok(())
     }
 }
@@ -497,14 +617,10 @@ fn execute_statements(
     arguments: &[[u8; 32]],
     parameter_types: &[ValueType],
     return_type: ValueType,
-    base_gas: u64,
-    gas_limit: u64,
+    mut meter: GasMeter,
     environment: &mut RuntimeEnvironment<'_>,
+    observed_gas: &mut u64,
 ) -> Result<ExecutionResult> {
-    let mut meter = GasMeter {
-        used: base_gas,
-        limit: gas_limit,
-    };
     if meter.used > meter.limit {
         bail!(
             "out of gas: requires at least {}, limit is {}",
@@ -520,8 +636,9 @@ fn execute_statements(
         &mut locals,
         &mut meter,
         environment,
-    )?
-    .ok_or_else(|| anyhow!("statement block completed without returning"))?;
+    );
+    *observed_gas = meter.used;
+    let result = result?.ok_or_else(|| anyhow!("statement block completed without returning"))?;
     if result.value_type != return_type {
         bail!("statement return type does not match function return type");
     }
@@ -625,13 +742,19 @@ fn execute_block(
                     bail!("require condition runtime type is not bool");
                 }
                 if condition.word == word_from_bool(false) {
-                    bail!("require condition failed");
+                    return Err(ClassifiedFault::new(
+                        FailureKind::Revert,
+                        "require condition failed",
+                    )
+                    .into());
                 }
                 if condition.word != word_from_bool(true) {
                     bail!("require condition is not a canonical bool");
                 }
             }
-            Statement::Revert => bail!("execution reverted"),
+            Statement::Revert => {
+                return Err(ClassifiedFault::new(FailureKind::Revert, "execution reverted").into())
+            }
             Statement::Return(expression) => {
                 meter.charge(INSTRUCTION_GAS.saturating_mul(expression.len() as u64))?;
                 return Ok(Some(evaluate_expression(
@@ -947,6 +1070,61 @@ mod tests {
         assert!(vm.execute(&bytes, "echo", &[], 100).is_err());
         assert!(vm.execute(&bytes, "echo", &[[2; 32]], 100).is_err());
         assert!(vm.execute(&bytes, "echo", &[[0; 32]], 0).is_err());
+    }
+
+    #[test]
+    fn transactional_outcomes_report_failure_kind_and_consumed_gas() {
+        let bytes = Program {
+            storage: vec![],
+            events: vec![],
+            functions: vec![Function {
+                name: "guarded".into(),
+                parameters: vec![],
+                return_type: ValueType::U64,
+                return_value: ReturnValue::Statements(vec![
+                    Statement::Require(vec![Instruction::Constant(
+                        ValueType::Bool,
+                        word_from_bool(false),
+                    )]),
+                    Statement::Return(vec![Instruction::Constant(ValueType::U64, u64_word(1))]),
+                ]),
+            }],
+        }
+        .encode()
+        .unwrap();
+        let vm = Vm::default();
+        let context = ExecutionContext::default();
+        let mut storage = Storage::default();
+
+        assert_eq!(
+            vm.execute_transactionally(&bytes, "missing", &[], 100, &mut storage, &context),
+            ExecutionOutcome::Failure(ExecutionFailure {
+                kind: FailureKind::InvalidRequest,
+                message: "unknown LithoVM function 'missing'".into(),
+                gas_used: 0,
+            })
+        );
+
+        let ExecutionOutcome::Failure(reverted) =
+            vm.execute_transactionally(&bytes, "guarded", &[], 100, &mut storage, &context)
+        else {
+            panic!("guarded call should revert");
+        };
+        assert_eq!(reverted.kind, FailureKind::Revert);
+        assert_eq!(reverted.gas_used, BASE_CALL_GAS + 2 * INSTRUCTION_GAS);
+
+        let ExecutionOutcome::Failure(out_of_gas) = vm.execute_transactionally(
+            &bytes,
+            "guarded",
+            &[],
+            BASE_CALL_GAS,
+            &mut storage,
+            &context,
+        ) else {
+            panic!("guarded call should run out of gas");
+        };
+        assert_eq!(out_of_gas.kind, FailureKind::OutOfGas);
+        assert_eq!(out_of_gas.gas_used, BASE_CALL_GAS);
     }
 
     #[test]

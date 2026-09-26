@@ -5,12 +5,13 @@ This repository contains a preview compiler backend plus development scaffolds. 
 | Tool | Current implementation |
 |---|---|
 | lithc | Parses/checks declarations and emits ABI plus executable EVM or versioned native LithoVM bytecode for the documented subset. Native v10 output supports typed literal and `keccak256` constants, gas-bounded repeat loops, typed mutable and immutable locals, staged outbound contract-call intents and native transfers, typed events, explicit message/block/chain context, transactional scalar storage, structured `if`/`else`, checked `u64` expressions, and explicit `require`/`revert` failures. Unsupported semantics fail the complete build. |
+| lithovm-host | Transactional chain-state seam plus in-memory conformance adapter. Produces structured failure/gas outcomes, executes registered zero-argument child calls with remaining gas, atomically commits the full call tree, and rejects reentrancy. No Lithosphere persistence/RPC adapter is included. |
 | lithfmt | Parse-checked, literal-preserving whitespace normalization; supports --check. |
 | lithlint | Declaration-level naming and AI-budget rules; supports --deny-warnings. Not a security analyzer. |
 | lithdev | Placeholder shell entrypoint. No deployment execution. |
 | lithls, lithtest, lithsec, lithpkg | Specification-only targets. No usable implementations here. |
 
-The SDK compiler, formatter and linter wrappers invoke the Rust commands from this checkout. lithdev remains a placeholder. The native VM strictly decodes and executes [Native LithoVM ABI v10](LITHOVM_ABI_V10.md) and versions 1 through 9. Version 10 adds explicit transactional `require` and `revert`. Version 9 adds gas-bounded repeat loops. Version 8 adds typed mutable local bindings and assignment. Version 7 adds staged outbound call intents. Versions 6 through 3 add native transfers, events, host context and transactional scalar storage. Synchronous calls, return data, general while loops, recursion, collection storage, receipts and zk authorization are not implemented. The EVM target remains documented in [EVM backend v1](EVM_BACKEND_V1.md).
+The SDK compiler, formatter and linter wrappers invoke the Rust commands from this checkout. lithdev remains a placeholder. The native VM strictly decodes and executes [Native LithoVM ABI v10](LITHOVM_ABI_V10.md) and versions 1 through 9. Version 10 adds explicit transactional `require` and `revert`. Version 9 adds gas-bounded repeat loops. Version 8 adds typed mutable local bindings and assignment. Version 7 adds staged outbound call intents. Versions 6 through 3 add native transfers, events, host context and transactional scalar storage. The [transactional host v1](LITHOVM_HOST_V1.md) resolves registered zero-argument child calls synchronously at the host seam; calldata, return data, general while loops, recursion, collection storage, persisted consensus receipts and zk authorization are not implemented. The EVM target remains documented in [EVM backend v1](EVM_BACKEND_V1.md).
 
 ## Local development
 
@@ -42,7 +43,8 @@ compiler/runtime boundary; it does not yet establish production readiness.
 The tested front end from `KaJLabs/Lithosphere/toolchain` has been imported here. See [import provenance and command changes](FRONTEND_IMPORT.md).
 
 The EVM backend targets the deployed EVM interface on LITHO. The native
-compiler and interpreter are currently library-level components and do not
+compiler, interpreter and transactional host are currently library-level
+components and do not
 claim that a `lithic_*` RPC namespace or on-chain native module is deployed.
 
 ## LEP100-15
