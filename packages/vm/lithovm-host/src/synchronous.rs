@@ -103,6 +103,14 @@ impl<T: StateTransaction> Adapter<'_, T> {
         );
         // Everything after this point, including validation failures, pays for code.
         let created = (|| {
+            if self.events.deployments.len() >= 64 {
+                return Err(HostFailure {
+                    kind: HostFailureKind::Vm(FailureKind::Trap),
+                    message: "transaction deployment record limit exceeded".into(),
+                    gas_used: 0,
+                    failed_contract: self.address,
+                });
+            }
             if self
                 .state
                 .load_contract(&address)
@@ -148,6 +156,15 @@ impl<T: StateTransaction> Adapter<'_, T> {
                 },
                 0,
             )?;
+            self.events.deployments.push(CommittedDeployment {
+                creator: self.address,
+                contract: address,
+                code_hash: template.code_hash,
+                origin: DeploymentOrigin::Child {
+                    template: request.template,
+                    salt: request.salt,
+                },
+            });
             let result = self.invoke_inner(
                 NativeInvocation {
                     target: address,

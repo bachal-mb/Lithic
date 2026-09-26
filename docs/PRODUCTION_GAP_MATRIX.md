@@ -39,10 +39,21 @@ found. Documentation and pseudocode are not counted as implementation.
 | Fuzzing/security | Missing production evidence: bounded unit tests exist; no fuzz target, corpus or current toolchain security review | Decoder/compiler-runtime, stateful map, synchronous call and child-creation targets; bounded execution campaigns and generated corpora retained | Longer campaigns, broader graphs/differentials, coverage/dependency/SBOM review, threat model, independent review and remediation closure |
 | Reproducible signed release | Partial: locked Rust build, pinned Actions, checksums and build provenance; archives are produced independently per hosted runner | Unchanged | Rebuild comparison or documented reproducibility level, SBOMs, malware/dependency scan, signed annotated release tag or approved keyless tag policy, installation/conformance tests |
 | litho.finance deployment UI | Missing from this repository; no production deployment interface exists to integrate | Full frontend accessed; local safety branch through `a38191c` rejects fake native success and validates Solidity receipts; 24 unit tests, typecheck, lint, production build and four isolated browser tests pass; native remains disabled | Real wallet/signing tests, reviewed native ABI, simulation/fee/network checks, status/retry UX and end-to-end Makalu evidence; no live change performed |
-| LithoScan verification/status | Missing native source-verification pipeline | Compiler artifacts and source/status schemas exist; offline `lithverify` rebuilds exact source, validates complete artifact metadata and matches independently supplied chain bytecode with negative tests | Pin reviewed compiler executable/provenance, wire trusted native RPC observations and worker resource limits, implement persisted status/finality and UI |
+| LithoScan verification/status | Missing native source-verification pipeline | Offline lithverify rebuilds exact source and checks full artifact/code metadata; host now returns committed deployment records with a tested branch-bound included/unverified status mapper | Approved receipt transport, trusted native RPC and pinned-height code, compiler provenance/worker limits, persisted status/finality and UI |
 | LAX reference token | No production Lithic contract or deployment authorization | Source candidate compiles under v11, initializes exactly `10_000_000_000 * 10^18`, and passes atomic host deploy/init; no deployment performed | Approved LITHO allocation input, chain preservation of deploy/init atomicity, executable-profile approval, audit, Makalu rehearsal, verification package and explicit deployment approval |
 
 ## Ordered closure path
+
+### Current external decision gate
+
+Host-generated deployment records and the local included-status handoff are
+implemented; see [receipt evidence and remaining integration](LITHOSCAN_NATIVE_RECEIPTS_V1.md).
+The next production-facing chain interface needs owner confirmation of gateway
+route, salt-versus-counter creation identity and fail-whole-transaction versus
+catchable-frame semantics. The old integration proposal and new candidate differ
+on the latter two; see [the concrete review request](NATIVE_CHAIN_INTEGRATION_REVIEW.md).
+LEP100-15 also still needs the previously identified normative signing values.
+This does not imply other engineering, Makalu tests, audit or releases are complete.
 
 ### Local string milestone, 2026-09-26
 

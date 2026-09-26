@@ -5,6 +5,7 @@ use lithovm::{
 use lithovm_bytecode::{function_selector, parse, values::Value};
 use sha3::{Digest, Keccak256};
 use std::collections::BTreeMap;
+pub mod deployment_status;
 mod synchronous;
 
 pub type Address = [u8; 32];
@@ -61,6 +62,7 @@ pub struct DeployRequest<V = [u8; 32]> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeploySuccess<V = [u8; 32]> {
+    pub deployments: Vec<CommittedDeployment>,
     pub contract: Address,
     pub code_hash: [u8; 32],
     pub initializer_result: Option<ExecutionResult<V>>,
@@ -95,6 +97,7 @@ pub struct CommittedEvent<V = [u8; 32]> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostSuccess<V = [u8; 32]> {
+    pub deployments: Vec<CommittedDeployment>,
     pub result: ExecutionResult<V>,
     pub gas_used: u64,
     pub events: Vec<CommittedEvent<V>>,
@@ -119,6 +122,21 @@ pub struct HostFailure {
     pub message: String,
     pub gas_used: u64,
     pub failed_contract: Address,
+}
+
+/// Host-generated registration, published only after the enclosing commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommittedDeployment {
+    pub creator: Address,
+    pub contract: Address,
+    pub code_hash: [u8; 32],
+    pub origin: DeploymentOrigin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeploymentOrigin {
+    Transaction { nonce: u64 },
+    Child { template: Address, salt: [u8; 32] },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -295,6 +313,14 @@ impl<S: TransactionalState> TransactionalHost<S> {
         let mut events = EventJournal {
             events: Vec::new(),
             value_bytes: 0,
+            deployments: vec![CommittedDeployment {
+                creator: request.deployer,
+                contract: address,
+                code_hash,
+                origin: DeploymentOrigin::Transaction {
+                    nonce: request.nonce,
+                },
+            }],
         };
         let mut active_contracts = vec![address];
         let initialized = if let Some(initializer) = request.initializer {
@@ -328,6 +354,7 @@ impl<S: TransactionalState> TransactionalHost<S> {
             .unwrap_or((None, 0));
         match transaction.commit() {
             Ok(()) => DeployOutcome::Success(DeploySuccess {
+                deployments: events.deployments,
                 contract: address,
                 code_hash,
                 initializer_result,
@@ -362,6 +389,7 @@ impl<S: TransactionalState> TransactionalHost<S> {
         let mut events = EventJournal {
             events: Vec::new(),
             value_bytes: 0,
+            deployments: Vec::new(),
         };
         let mut active_contracts = vec![request.contract];
         let frame = FrameRequest {
@@ -385,6 +413,7 @@ impl<S: TransactionalState> TransactionalHost<S> {
         ) {
             Ok((result, gas_used)) => match transaction.commit() {
                 Ok(()) => HostOutcome::Success(HostSuccess {
+                    deployments: events.deployments,
                     result,
                     gas_used,
                     events: events.events,
@@ -509,6 +538,7 @@ impl HostValue for Value {
 }
 
 struct EventJournal<V> {
+    deployments: Vec<CommittedDeployment>,
     events: Vec<CommittedEvent<V>>,
     value_bytes: usize,
 }

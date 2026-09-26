@@ -118,6 +118,31 @@ fn creation_is_atomic_metered_prefunding_safe_and_collision_resistant() {
         Value::Word(ValueType::Address, child)
     );
     assert_eq!(host.state().balance(&child), word(8));
+    assert_eq!(result.deployments.len(), 1);
+    let registration = &result.deployments[0];
+    assert_eq!(registration.creator, factory);
+    assert_eq!(registration.contract, child);
+    assert_eq!(registration.code_hash, code_hash(&code));
+    assert_eq!(
+        registration.origin,
+        lithovm_host::DeploymentOrigin::Child {
+            template,
+            salt: word(17)
+        }
+    );
+    let statuses = lithovm_host::deployment_status::included(
+        &result.deployments,
+        &lithovm_host::deployment_status::Inclusion {
+            chain_id: 700777,
+            transaction_hash: word(40),
+            block_hash: word(41),
+            block_height: 1,
+            transaction_gas_used: result.gas_used,
+        },
+    )
+    .unwrap();
+    assert_eq!(statuses[0]["state"], "included");
+    assert_eq!(statuses[0]["verificationState"], "unverified");
     assert_eq!(host.state().balance(&factory), word(5));
     assert_eq!(
         host.state()
@@ -316,6 +341,46 @@ fn malformed_creation_and_legacy_modes_fail_closed() {
 }
 
 #[test]
+fn fabricated_contract_event_is_not_a_registration_and_record_limit_rolls_back() {
+    let mut host = TransactionalHost::new(InMemoryState::default());
+    let fake = deploy(&mut host, bytes("contract Fake { event TokenCreated { token: address } pub fn fake(token: address) -> bool { emit TokenCreated { token: token }; return true; } }"), 0, None);
+    let HostOutcome::Success(result) =
+        host.execute_values(call(fake, "fake", vec![value(ValueType::Address, 7)]))
+    else {
+        panic!("event test")
+    };
+    assert_eq!(result.events.len(), 1);
+    assert!(result.deployments.is_empty());
+    let template_code = bytes(CHILD);
+    let template = deploy(&mut host, template_code.clone(), 1, None);
+    let mut source = String::from("contract Many {");
+    for n in 0..65 {
+        source.push_str(&format!("const S{n}: bytes32 = 0x{n:064x};"));
+    }
+    source.push_str("pub fn run(t: address, init: bytes32) -> bool {");
+    for n in 0..65 {
+        source.push_str(&format!(
+            "let c{n}: address = create_contract(t, S{n}, init, 0, true);"
+        ));
+    }
+    source.push_str("return true; } }");
+    let factory = deploy(&mut host, bytes(&source), 2, None);
+    let before = host.state().clone();
+    let HostOutcome::Failure(failure) = host.execute_values(call(
+        factory,
+        "run",
+        vec![
+            Value::Word(ValueType::Address, template),
+            Value::Word(ValueType::Bytes32, selector(&template_code, "initialize")),
+        ],
+    )) else {
+        panic!("accepted 65 registrations")
+    };
+    assert!(failure.message.contains("deployment record limit"));
+    assert_eq!(host.state(), &before);
+}
+
+#[test]
 fn invalid_templates_initializers_balances_and_code_sizes_discard_creation() {
     let mut host = TransactionalHost::new(InMemoryState::default());
     let code = bytes(CHILD);
@@ -435,5 +500,8 @@ fn newly_created_child_can_be_called_and_top_level_deploy_rolls_back_both() {
         Value::Word(ValueType::Address, result.contract)
     );
     let child = child_contract_address(result.contract, word(1), code_hash(&code), 700777);
+    assert_eq!(result.deployments.len(), 2);
+    assert_eq!(result.deployments[0].contract, result.contract);
+    assert_eq!(result.deployments[1].contract, child);
     assert!(host.state().contract(&child).is_some());
 }

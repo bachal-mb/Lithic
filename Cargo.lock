@@ -1360,6 +1360,7 @@ dependencies = [
  "lithic-lithovm",
  "lithovm",
  "lithovm-bytecode",
+ "serde_json",
  "sha3",
 ]
 

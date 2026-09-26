@@ -64,6 +64,11 @@ gas for it consumes the forwarded limit. Missing/corrupt/oversized templates are
 rejected before this code charge. Every initializer/descendant gas charge is
 returned to the parent; final caller gas exhaustion still rolls everything back.
 
+The host now caps registration records at 64 per transaction (including a
+top-level deployment), with atomic failure if exceeded. Successful records feed
+the [native receipt handoff](LITHOSCAN_NATIVE_RECEIPTS_V1.md), not untrusted token
+events. Actual persisted chain receipts and explorer ingestion remain open.
+
 These are candidate prices, not approved chain fees. The current state interface
 loads a whole template record before the size check: production code-only reads,
 bounded database allocation, pre-execution parsing/hashing costs, persistence/rent

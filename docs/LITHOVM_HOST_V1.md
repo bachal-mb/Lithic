@@ -24,6 +24,12 @@ value and optional initializer effects share one state transaction.
 
 ## Execution and receipts
 
+Successful host outcomes now include [host-generated deployment
+records](LITHOSCAN_NATIVE_RECEIPTS_V1.md), distinct from contract events. They
+share the outer transaction, are capped at 64 registrations and are absent on
+failure. The local included-status mapper requires trusted chain/block identity;
+it does not itself prove inclusion or source verification.
+
 `Vm::execute_transactionally` returns `ExecutionOutcome`, preserving failure
 kind, message and gas consumed. Pre-execution request failures consume zero
 gas. Out-of-gas consumes the supplied limit. Runtime traps and explicit
