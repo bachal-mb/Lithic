@@ -9,7 +9,8 @@ pub const EVENT_VERSION: u8 = 5;
 pub const TRANSFER_VERSION: u8 = 6;
 pub const CALL_VERSION: u8 = 7;
 pub const MUTABLE_VERSION: u8 = 8;
-pub const VERSION: u8 = 9;
+pub const REPEAT_VERSION: u8 = 9;
+pub const VERSION: u8 = 10;
 pub const MAX_FUNCTIONS: usize = 1024;
 pub const MAX_PARAMETERS: usize = 64;
 pub const MAX_NAME_BYTES: usize = 255;
@@ -79,6 +80,8 @@ pub enum Statement {
         count: Vec<Instruction>,
         body: Vec<Statement>,
     },
+    Require(Vec<Instruction>),
+    Revert,
     Return(Vec<Instruction>),
     Store {
         field: u16,
@@ -516,6 +519,11 @@ fn encode_statements(bytes: &mut Vec<u8>, statements: &[Statement]) -> Result<()
                 encode_expression(bytes, count)?;
                 encode_statements(bytes, body)?;
             }
+            Statement::Require(condition) => {
+                bytes.push(11);
+                encode_expression(bytes, condition)?;
+            }
+            Statement::Revert => bytes.push(12),
             Statement::Return(expression) => {
                 bytes.push(2);
                 encode_expression(bytes, expression)?;
@@ -658,10 +666,12 @@ fn decode_statements(reader: &mut Reader<'_>, version: u8, depth: usize) -> Resu
                 local: reader.u16()?,
                 expression: decode_expression(reader, version)?,
             },
-            10 if version >= VERSION => Statement::Repeat {
+            10 if version >= REPEAT_VERSION => Statement::Repeat {
                 count: decode_expression(reader, version)?,
                 body: decode_statements(reader, version, depth + 1)?,
             },
+            11 if version >= VERSION => Statement::Require(decode_expression(reader, version)?),
+            12 if version >= VERSION => Statement::Revert,
             2 => Statement::Return(decode_expression(reader, version)?),
             3 => Statement::If {
                 condition: decode_expression(reader, version)?,
@@ -841,6 +851,10 @@ fn validate_statements(
                     depth + 1,
                 )?;
             }
+            Statement::Require(condition) => {
+                validate_expression(condition, parameters, &locals, storage, ValueType::Bool)?;
+            }
+            Statement::Revert => terminal = true,
             Statement::Return(expression) => {
                 validate_expression(expression, parameters, &locals, storage, return_type)?;
                 terminal = true;
@@ -1159,6 +1173,9 @@ mod tests {
         let mut v8 = sample().encode().unwrap();
         v8[MAGIC.len()] = MUTABLE_VERSION;
         assert_eq!(parse(&v8).unwrap(), sample());
+        let mut v9 = sample().encode().unwrap();
+        v9[MAGIC.len()] = REPEAT_VERSION;
+        assert_eq!(parse(&v9).unwrap(), sample());
     }
 
     #[test]
@@ -1409,6 +1426,43 @@ mod tests {
             unreachable!()
         };
         *count = vec![Instruction::Constant(ValueType::Bool, [0; 32])];
+        assert!(invalid.encode().is_err());
+    }
+
+    #[test]
+    fn failure_statements_round_trip_and_require_bool() {
+        let program = Program {
+            storage: vec![],
+            events: vec![],
+            functions: vec![Function {
+                name: "guarded".into(),
+                parameters: vec![ValueType::Bool],
+                return_type: ValueType::U64,
+                return_value: ReturnValue::Statements(vec![
+                    Statement::Require(vec![Instruction::Parameter(0)]),
+                    Statement::If {
+                        condition: vec![Instruction::Parameter(0)],
+                        then_branch: vec![Statement::Return(vec![Instruction::Constant(
+                            ValueType::U64,
+                            [0; 32],
+                        )])],
+                        else_branch: vec![Statement::Revert],
+                    },
+                ]),
+            }],
+        };
+        let bytes = program.encode().unwrap();
+        assert_eq!(parse(&bytes).unwrap(), program);
+
+        let mut mislabeled_v9 = bytes;
+        mislabeled_v9[MAGIC.len()] = REPEAT_VERSION;
+        assert!(parse(&mislabeled_v9).is_err());
+
+        let mut invalid = program;
+        let ReturnValue::Statements(statements) = &mut invalid.functions[0].return_value else {
+            unreachable!()
+        };
+        statements[0] = Statement::Require(vec![Instruction::Constant(ValueType::U64, [0; 32])]);
         assert!(invalid.encode().is_err());
     }
 }

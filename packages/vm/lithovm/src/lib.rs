@@ -612,6 +612,26 @@ fn execute_block(
                     }
                 }
             }
+            Statement::Require(condition) => {
+                meter.charge(INSTRUCTION_GAS.saturating_mul(condition.len() as u64))?;
+                let condition = evaluate_expression(
+                    condition,
+                    arguments,
+                    parameter_types,
+                    locals,
+                    environment,
+                )?;
+                if condition.value_type != ValueType::Bool {
+                    bail!("require condition runtime type is not bool");
+                }
+                if condition.word == word_from_bool(false) {
+                    bail!("require condition failed");
+                }
+                if condition.word != word_from_bool(true) {
+                    bail!("require condition is not a canonical bool");
+                }
+            }
+            Statement::Revert => bail!("execution reverted"),
             Statement::Return(expression) => {
                 meter.charge(INSTRUCTION_GAS.saturating_mul(expression.len() as u64))?;
                 return Ok(Some(evaluate_expression(

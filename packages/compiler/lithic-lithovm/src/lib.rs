@@ -13,7 +13,7 @@ use serde::Serialize;
 use sha3::{Digest, Keccak256};
 use std::fmt;
 
-pub const TARGET: &str = "lithovm-native-v9";
+pub const TARGET: &str = "lithovm-native-v10";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CompiledConstant {
@@ -253,7 +253,7 @@ fn lower_type(value: &Type) -> Result<ValueType, String> {
             "bool" => Ok(ValueType::Bool),
             "address" => Ok(ValueType::Address),
             "bytes32" => Ok(ValueType::Bytes32),
-            other => Err(format!("type '{other}' has no native LithoVM v9 lowering")),
+            other => Err(format!("type '{other}' has no native LithoVM v10 lowering")),
         },
         Type::Map(_, _) | Type::Vec(_) => Err("collection types are unsupported".to_string()),
     }
@@ -266,7 +266,7 @@ fn lower_named_type(name: &str) -> Result<ValueType, String> {
         "bool" => Ok(ValueType::Bool),
         "address" => Ok(ValueType::Address),
         "bytes32" => Ok(ValueType::Bytes32),
-        other => Err(format!("type '{other}' has no native LithoVM v9 lowering")),
+        other => Err(format!("type '{other}' has no native LithoVM v10 lowering")),
     }
 }
 
@@ -360,7 +360,9 @@ impl BodyParser<'_> {
                 return Ok(statements);
             }
             if terminal {
-                return Err("unreachable statement after terminal return or branch".to_string());
+                return Err(
+                    "unreachable statement after terminal return, revert, or branch".to_string(),
+                );
             }
 
             let statement = if self.consume_keyword("let") {
@@ -373,6 +375,11 @@ impl BodyParser<'_> {
                 self.parse_if(depth)?
             } else if self.consume_keyword("repeat") {
                 self.parse_repeat(depth)?
+            } else if self.consume_keyword("require") {
+                self.parse_require()?
+            } else if self.consume_keyword("revert") {
+                terminal = true;
+                self.parse_revert()?
             } else if self.consume_keyword("emit") {
                 self.parse_emit()?
             } else if self.consume_keyword("transfer_native") {
@@ -481,6 +488,32 @@ impl BodyParser<'_> {
             ));
         }
         Ok(Statement::Return(expression))
+    }
+
+    fn parse_require(&mut self) -> Result<Statement, String> {
+        self.skip_whitespace();
+        self.expect_byte(b'(', "expected '(' after require")?;
+        let condition_source = self.take_expression_until(b')')?.to_owned();
+        let (condition, condition_type) = self.compile_expression(&condition_source)?;
+        if condition_type != ValueType::Bool {
+            return Err(format!(
+                "require condition has type {}, expected bool",
+                condition_type.name()
+            ));
+        }
+        self.skip_whitespace();
+        self.expect_byte(b';', "expected ';' after require")?;
+        Ok(Statement::Require(condition))
+    }
+
+    fn parse_revert(&mut self) -> Result<Statement, String> {
+        self.skip_whitespace();
+        self.expect_byte(b'(', "expected '(' after revert")?;
+        self.skip_whitespace();
+        self.expect_byte(b')', "revert does not accept arguments")?;
+        self.skip_whitespace();
+        self.expect_byte(b';', "expected ';' after revert")?;
+        Ok(Statement::Revert)
     }
 
     fn parse_store(&mut self) -> Result<Statement, String> {
@@ -1392,8 +1425,8 @@ mod tests {
             "contract C { pub fn choose(value: u64, limit: u64) -> u64 { let doubled: u64 = value * 2; if doubled < limit { return doubled; } else { let fallback = limit + 1; return fallback; } } }",
         )
         .unwrap();
-        assert_eq!(artifact.target, "lithovm-native-v9");
-        assert_eq!(artifact.bytecode_version, 9);
+        assert_eq!(artifact.target, "lithovm-native-v10");
+        assert_eq!(artifact.bytecode_version, 10);
         let bytes = hex::decode(&artifact.bytecode[2..]).unwrap();
         let vm = Vm::default();
 
@@ -1957,6 +1990,98 @@ mod tests {
             (
                 "contract C { const FLAG: bool = true; pub fn x() -> u64 { return FLAG; } }",
                 "constant 'FLAG' has type bool, expected u64",
+            ),
+        ] {
+            assert!(
+                compile(source).unwrap_err().to_string().contains(expected),
+                "missing '{expected}' for {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_failures_roll_back_all_effects_and_allow_recovery() {
+        let artifact = compile(
+            "contract Guarded { state { value: u64; } event Changed { value: u64 } pub fn update(allowed: bool, recipient: address, target: address, selector: bytes32, amount: u256) -> u64 { self.value = 7; emit Changed { value: self.value }; transfer_native(recipient, amount); call_contract(target, selector, amount); require(allowed); return self.value; } pub fn abort() -> u64 { self.value = 9; revert(); } }",
+        )
+        .unwrap();
+        assert_eq!(artifact.target, "lithovm-native-v10");
+        assert_eq!(artifact.bytecode_version, 10);
+        let bytes = hex::decode(&artifact.bytecode[2..]).unwrap();
+        let mut account = [0; 32];
+        account[12..].copy_from_slice(&[3; 20]);
+        let selector = [7; 32];
+        let context = ExecutionContext {
+            contract_balance: word_from_u64(100),
+            chain_id: 700777,
+            ..ExecutionContext::default()
+        };
+        let vm = Vm::default();
+        let mut storage = Storage::default();
+        storage.set_word("value", word_from_u64(3));
+
+        let denied = vm
+            .execute_with_storage_and_context(
+                &bytes,
+                "update",
+                &[
+                    word_from_bool(false),
+                    account,
+                    account,
+                    selector,
+                    word_from_u64(10),
+                ],
+                500,
+                &mut storage,
+                &context,
+            )
+            .unwrap_err();
+        assert!(denied.to_string().contains("require condition failed"));
+        assert_eq!(storage.get("value"), Some(&word_from_u64(3)));
+
+        let reverted = vm
+            .execute_with_storage_and_context(&bytes, "abort", &[], 100, &mut storage, &context)
+            .unwrap_err();
+        assert!(reverted.to_string().contains("execution reverted"));
+        assert_eq!(storage.get("value"), Some(&word_from_u64(3)));
+
+        let recovered = vm
+            .execute_with_storage_and_context(
+                &bytes,
+                "update",
+                &[
+                    word_from_bool(true),
+                    account,
+                    account,
+                    selector,
+                    word_from_u64(10),
+                ],
+                500,
+                &mut storage,
+                &context,
+            )
+            .unwrap();
+        assert_eq!(recovered.return_value, word_from_u64(7));
+        assert_eq!(recovered.events.len(), 1);
+        assert_eq!(recovered.transfers.len(), 1);
+        assert_eq!(recovered.calls.len(), 1);
+        assert_eq!(storage.get("value"), Some(&word_from_u64(7)));
+    }
+
+    #[test]
+    fn failure_syntax_and_types_fail_closed() {
+        for (source, expected) in [
+            (
+                "contract C { pub fn x(value: u64) -> u64 { require(value); return value; } }",
+                "require condition has type u64",
+            ),
+            (
+                "contract C { pub fn x() -> u64 { revert(1); } }",
+                "revert does not accept arguments",
+            ),
+            (
+                "contract C { pub fn x() -> u64 { revert(); return 1; } }",
+                "unreachable statement",
             ),
         ] {
             assert!(

@@ -24,11 +24,11 @@ EXAMPLES:
     lithc --emit evm apps/examples/frontend/evm-constants.lithic
     lithc --emit lithovm apps/examples/frontend/evm-constants.lithic
 
-EVM output supports its documented stateless subset. Native LithoVM v9 also
+EVM output supports its documented stateless subset. Native LithoVM v10 also
 supports typed constants, gas-bounded repeat loops, mutable and immutable
 locals, staged contract-call intents and native transfers, typed events,
-scalar storage, explicit host context, typed expressions and structured
-if/else returns.
+scalar storage, explicit host context, typed expressions, structured if/else,
+and transactional require/revert failure semantics.
 Unsupported semantics reject the complete build."#,
         env!("CARGO_PKG_VERSION")
     );

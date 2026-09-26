@@ -4,13 +4,13 @@ This repository contains a preview compiler backend plus development scaffolds. 
 
 | Tool | Current implementation |
 |---|---|
-| lithc | Parses/checks declarations and emits ABI plus executable EVM or versioned native LithoVM bytecode for the documented subset. Native v9 output supports typed literal and `keccak256` constants, gas-bounded repeat loops, typed mutable and immutable locals, staged outbound contract-call intents and native transfers, typed events, explicit message/block/chain context, transactional scalar storage, structured `if`/`else`, and checked `u64` expressions. Unsupported semantics fail the complete build. |
+| lithc | Parses/checks declarations and emits ABI plus executable EVM or versioned native LithoVM bytecode for the documented subset. Native v10 output supports typed literal and `keccak256` constants, gas-bounded repeat loops, typed mutable and immutable locals, staged outbound contract-call intents and native transfers, typed events, explicit message/block/chain context, transactional scalar storage, structured `if`/`else`, checked `u64` expressions, and explicit `require`/`revert` failures. Unsupported semantics fail the complete build. |
 | lithfmt | Parse-checked, literal-preserving whitespace normalization; supports --check. |
 | lithlint | Declaration-level naming and AI-budget rules; supports --deny-warnings. Not a security analyzer. |
 | lithdev | Placeholder shell entrypoint. No deployment execution. |
 | lithls, lithtest, lithsec, lithpkg | Specification-only targets. No usable implementations here. |
 
-The SDK compiler, formatter and linter wrappers invoke the Rust commands from this checkout. lithdev remains a placeholder. The native VM strictly decodes and executes [Native LithoVM ABI v9](LITHOVM_ABI_V9.md) and versions 1 through 8. Version 9 adds gas-bounded repeat loops. Version 8 adds typed mutable local bindings and assignment. Version 7 adds staged outbound call intents. Versions 6 through 3 add native transfers, events, host context and transactional scalar storage. Synchronous calls, return data, general while loops, recursion, collection storage, receipts and zk authorization are not implemented. The EVM target remains documented in [EVM backend v1](EVM_BACKEND_V1.md).
+The SDK compiler, formatter and linter wrappers invoke the Rust commands from this checkout. lithdev remains a placeholder. The native VM strictly decodes and executes [Native LithoVM ABI v10](LITHOVM_ABI_V10.md) and versions 1 through 9. Version 10 adds explicit transactional `require` and `revert`. Version 9 adds gas-bounded repeat loops. Version 8 adds typed mutable local bindings and assignment. Version 7 adds staged outbound call intents. Versions 6 through 3 add native transfers, events, host context and transactional scalar storage. Synchronous calls, return data, general while loops, recursion, collection storage, receipts and zk authorization are not implemented. The EVM target remains documented in [EVM backend v1](EVM_BACKEND_V1.md).
 
 ## Local development
 
@@ -27,11 +27,16 @@ These commands build and test the toolchain. Passing them validates only the cap
 Reviewed tags can produce draft cross-platform archives and checksums through
 the [preview release process](RELEASE_PROCESS.md).
 
+The independent `fuzz` workspace contains libFuzzer targets for strict
+bytecode decoding and the compiler-to-runtime artifact seam. CI runs bounded
+smoke campaigns; see the dated fuzz evidence for the latest local run. These
+campaigns do not replace a production security review.
+
 ## Lithosphere integration
 
 A [local execution experiment](LITHOVM_EXECUTION_LAB.md) remains historical.
 `lithc --emit lithovm` now emits the versioned native artifact described in
-[Native LithoVM ABI v9](LITHOVM_ABI_V9.md), while retaining v1 through v8 decoding compatibility. This establishes the combined
+[Native LithoVM ABI v10](LITHOVM_ABI_V10.md), while retaining v1 through v9 decoding compatibility. This establishes the combined
 compiler/runtime boundary; it does not yet establish production readiness.
 
 The tested front end from `KaJLabs/Lithosphere/toolchain` has been imported here. See [import provenance and command changes](FRONTEND_IMPORT.md).
