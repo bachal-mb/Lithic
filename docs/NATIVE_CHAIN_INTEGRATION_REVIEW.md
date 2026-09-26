@@ -126,8 +126,9 @@ proof of correctness for a new gateway with Lithosphere's patches.
 No additional client decision is needed to prepare or test this isolated
 recommendation under the current task authorization. Chain/security owners
 must accept final execution/storage/ABI/gas rules before activation. Full
-frontend repository access is still needed for application build and wallet
-tests. Independent compiler/runtime work remains unfinished.
+frontend access is now available: the local safety branch passes application
+build and service tests. Browser-wallet tests and independent compiler/runtime
+work remain unfinished.
 
 ## Confirmed source boundary
 
@@ -158,5 +159,6 @@ with byte-dependent gas and explicit dynamic host deploy/call APIs. Source
 literals, contract-level child creation, ordered synchronous calls/return data,
 adversarial persistence tests, release reproducibility and independent review
 remain unfinished. The v12 VM and configurable token fixture are partial
-building blocks. Full frontend build and wallet integration also require the
-application repository; the supplied six-file package is not a full checkout.
+building blocks. The full frontend is now checked out and its local safety
+branch passes build/typecheck/lint and service tests. Native wallet integration
+and browser/on-chain tests remain outstanding.

@@ -64,7 +64,12 @@ the existing Solidity path validates receipt success, factory emitter, event
 cardinality, metadata and token address. Tests execute the actual service with
 mocked external dependencies; this is not a live frontend integration.
 
-Next implementation step: develop child-creation and metadata support against
-the above acceptance cases. Full frontend repository access is still needed to build,
-typecheck and wire the actual application. No additional workflow description
-is needed from Amir for this first case.
+Follow-up, 2026-09-26: local v12 compiler/VM/host metadata support now exists.
+Full frontend access is available at `amirmughal22/Litho-Finance`; its local
+safety branch commit `2822474` passes 24 tests, typecheck, lint and production
+build. Native requests remain disabled. These tests use the real ABI decoder
+but mocked wallet/RPC boundaries; no live application was changed.
+
+Next native implementation steps remain child creation and ordered calls,
+chain/gateway integration, browser-wallet tests and Makalu acceptance. No
+additional workflow description is needed from Amir for this first case.

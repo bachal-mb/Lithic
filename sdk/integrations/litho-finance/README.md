@@ -1,5 +1,18 @@
 # Litho Finance service integration candidate
 
+## Full frontend follow-up — 2026-09-26
+
+Access to `amirmughal22/Litho-Finance` is now available using `bachal-mb`.
+The safety changes were integrated locally from main `11078b5` into branch
+`fix/lithic-deployment-safety`, commit `2822474`. The full app passed 24 tests
+(18 new deployment tests using real viem ABI encoding/decoding), TypeScript,
+lint and the production build. Native deployment remains disabled. No remote
+push or live deployment was performed. Browser-wallet and on-chain end-to-end
+checks remain outstanding; existing dependency install warnings also remain.
+See that repository's `docs/LITHIC_INTEGRATION_STATUS.md` for exact scope.
+
+## Original standalone package candidate
+
 Based on Amir's six-file acceptance package; see
 `../../../docs/LITHO_FINANCE_ACCEPTANCE_CASE.md` for its SHA-256 and scope.
 `upstream/TokenCreationService.ts` preserves the supplied service;
