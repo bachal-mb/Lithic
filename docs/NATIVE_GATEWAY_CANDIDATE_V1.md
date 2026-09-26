@@ -6,6 +6,9 @@ requested first-profile choices: EVM gateway, salted child creation,
 fail-whole native transaction semantics and direct-wallet-only top-level
 deployment. Formal chain/security approval and Makalu activation remain
 separate gates.
+On 2026-09-27 the client acknowledged the detailed review request and agreed
+to proceed with a disabled integration candidate; this is not evidence of an
+independent security review or activation vote.
 
 ## Interface and trust
 
@@ -28,23 +31,26 @@ must equal the entire submitted input, so aliases/trailing bytes are rejected.
 The Rust FFI JSON request is internal to the Go/Rust seam, not a wallet ABI.
 
 The immediate EVM frame supplies caller and gas; the block context supplies
-height/time. The test-only registration receives chain ID, signed sender and
-deployment nonce through an `AuthenticatedTransaction` input, never calldata.
-The precompile checks that input's sender against the EVM transaction origin.
+height/time. The test-only keeper seam receives chain ID, sender and deployment
+nonce from the Evmos message through a `GatewayTransaction` input, never calldata.
+It rejects a sender/origin mismatch, invalid chain ID and fake simulation
+messages when commit is requested. Fake `eth_call`/estimate messages are allowed
+only in discard mode. The precompile checks the input sender against the EVM
+transaction origin.
 For deployment only, it additionally requires the immediate caller to be that
 sender with no EVM code. Native caller identity still comes from the frame,
 not `tx.origin`. EVM wrappers may call existing native contracts but cannot
 top-level deploy in this profile. The precompile also rejects STATICCALL,
 DELEGATECALL/CALLCODE and nonzero value.
 
-The pinned Evmos EVM transaction context does not expose the signed transaction
-nonce to a precompile, while its keeper has `msg.Nonce()` during state
+The pinned Evmos EVM transaction context does not expose the transaction nonce
+to a precompile, while its keeper has `msg.Nonce()` during state
 transition. The host's top-level address currently depends on deployer, nonce,
 code hash and chain ID. Thus two same-code deployments by an EVM wrapper in
 one transaction would collide under a single transaction nonce. The confirmed
 direct-wallet restriction avoids that first-profile ambiguity. The live keeper
-must still pass the authenticated `msg.Nonce()` and chain ID to the registration
-path, with simulation/replay tests, before app registration.
+must still call the tested message seam from the validated state transition,
+preserve discard-only simulation and prove replay behavior before app registration.
 
 ## Failure, gas and receipts
 

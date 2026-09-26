@@ -35,7 +35,10 @@ or currently running network match the lab.
   This registry is not installed in the chain app.
 - Direct-wallet top-level deploy succeeds; an EVM wrapper's top-level deploy
   reverts before native execution. A wrapper may still call an existing native
-  contract. Mismatched signed-sender metadata is rejected.
+  contract. Mismatched transaction-sender metadata is rejected.
+- A test-only keeper seam now derives gateway sender/nonce from the Evmos
+  `core.Message`, checks chain ID and EVM origin, and rejects fake simulation
+  messages in commit mode. It does not yet run inside `ApplyMessageWithConfig`.
 
 ## Verification commands
 
@@ -67,7 +70,7 @@ artifact or production installation recipe.
 
 ## Unclosed production controls
 
-The internal FFI JSON request, live keeper nonce/chain-ID handoff, provisional ABI precharge
+The internal FFI JSON request, live keeper registration, provisional ABI precharge
 and dynamic copy pricing, event topic and native state namespace are not
 consensus-approved. Malformed-payload decoding now has an experimental static
 precharge; complete gas accounting and benchmarks remain open.

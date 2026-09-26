@@ -11,19 +11,20 @@ import (
 	"github.com/evmos/evmos/v20/x/evm/statedb"
 )
 
-// AuthenticatedTransaction must be built by the chain keeper from the verified
-// EVM message. It is never decoded from gateway calldata.
-type AuthenticatedTransaction struct {
-	Origin  common.Address
-	Nonce   uint64
-	ChainID uint64
+// GatewayTransaction must be built by the chain keeper from the EVM message
+// after ante validation, or for discard-only simulation. Never from calldata.
+type GatewayTransaction struct {
+	Origin    common.Address
+	Nonce     uint64
+	ChainID   uint64
+	Simulated bool
 }
 
 // LabPrecompile is deliberately registered only by tests. Its gas pricing and
 // receipt log are not approved consensus rules.
 type LabPrecompile struct {
 	Key         storetypes.StoreKey
-	Transaction AuthenticatedTransaction
+	Transaction GatewayTransaction
 }
 
 var _ vm.PrecompiledContract = LabPrecompile{}
@@ -69,7 +70,7 @@ func (p LabPrecompile) Run(evm *vm.EVM, frame *vm.Contract, readOnly bool) ([]by
 
 // RegisterLabPrecompile modifies only the supplied ephemeral EVM instance.
 // It is never called from the chain app or production precompile registry.
-func RegisterLabPrecompile(evm *vm.EVM, key storetypes.StoreKey, tx AuthenticatedTransaction) {
+func RegisterLabPrecompile(evm *vm.EVM, key storetypes.StoreKey, tx GatewayTransaction) {
 	p := LabPrecompile{Key: key, Transaction: tx}
 	evm.WithPrecompiles(map[common.Address]vm.PrecompiledContract{LabAddress: p}, []common.Address{LabAddress})
 }

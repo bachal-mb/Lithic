@@ -9,6 +9,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/evmos/evmos/v20/x/evm/core/vm"
@@ -127,7 +128,33 @@ func TestEphemeralEVMPrecompileCallAndOuterRevert(t *testing.T) {
 		Transfer:    func(vm.StateDB, common.Address, common.Address, *big.Int) {},
 		BlockNumber: big.NewInt(11), Time: big.NewInt(22),
 	}, vm.TxContext{Origin: common.HexToAddress("0x0000000000000000000000000000000000000009")}, db, params.AllEthashProtocolChanges, vm.Config{})
-	RegisterLabPrecompile(evm, key, AuthenticatedTransaction{Origin: evm.TxContext.Origin, ChainID: 700777, Nonce: 1})
+	message := ethtypes.NewMessage(evm.TxContext.Origin, &LabAddress, 1, big.NewInt(0), 1000000, big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, false)
+	if err := RegisterLabForMessage(evm, key, message, big.NewInt(700777), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterLabForMessage(evm, key, message, big.NewInt(0), true); err == nil {
+		t.Fatal("accepted zero chain ID")
+	}
+	fake := ethtypes.NewMessage(evm.TxContext.Origin, &LabAddress, 1, big.NewInt(0), 1000000, big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, true)
+	if err := RegisterLabForMessage(evm, key, fake, big.NewInt(700777), true); err == nil {
+		t.Fatal("simulation was allowed to commit")
+	}
+	if err := RegisterLabForMessage(evm, key, fake, big.NewInt(700777), false); err != nil {
+		t.Fatalf("discard-only simulation rejected: %v", err)
+	}
+	if p, ok := evm.Precompile(LabAddress); !ok || !p.(LabPrecompile).Transaction.Simulated {
+		t.Fatal("simulation mode was not carried into gateway context")
+	}
+	if err := RegisterLabForMessage(evm, key, message, new(big.Int).Lsh(big.NewInt(1), 64), true); err == nil {
+		t.Fatal("accepted overflowing chain ID")
+	}
+	wrongMessage := ethtypes.NewMessage(common.HexToAddress("0x0a"), &LabAddress, 1, big.NewInt(0), 1000000, big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, false)
+	if err := RegisterLabForMessage(evm, key, wrongMessage, big.NewInt(700777), true); err == nil {
+		t.Fatal("accepted message sender mismatch")
+	}
+	if err := RegisterLabForMessage(evm, key, message, big.NewInt(700777), true); err != nil {
+		t.Fatal(err)
+	}
 	precompile, ok := evm.Precompile(LabAddress)
 	if !ok || precompile.RequiredGas([]byte{1, 2, 3}) != 512 {
 		t.Fatal("gateway decode gas not prepaid")
@@ -203,7 +230,7 @@ func TestEphemeralEVMPrecompileCallAndOuterRevert(t *testing.T) {
 	if _, _, err := evm.Call(wrapper, LabAddress, getPayload, 1000000, big.NewInt(0)); err != nil {
 		t.Fatalf("wrapper call to existing native contract should remain allowed: %v", err)
 	}
-	RegisterLabPrecompile(evm, key, AuthenticatedTransaction{Origin: wrapper.Address(), ChainID: 700777, Nonce: 1})
+	RegisterLabPrecompile(evm, key, GatewayTransaction{Origin: wrapper.Address(), ChainID: 700777, Nonce: 1})
 	if _, left, err := evm.Call(caller, LabAddress, getPayload, 1000000, big.NewInt(0)); err == nil || left != 0 {
 		t.Fatalf("mismatched authenticated transaction context accepted: %v %d", err, left)
 	}
