@@ -45,6 +45,9 @@ an app registration, deployed RPC, Makalu contract or production gas/ABI rule.
 The client-confirmed first profile has a [strict EVM ABI candidate](NATIVE_GATEWAY_CANDIDATE_V1.md)
 with full native selectors, provisional gas precharge and direct-wallet-only
 top-level deployment; it remains test-only.
+The [disabled keeper lab](NATIVE_CHAIN_KEEPER_LAB_2026_09_27.md) additionally
+passes a signed local EVM deploy/call and recovery through pinned Evmos
+`ApplyMessageWithConfig`. It is not a Makalu transaction or release build.
 
 Install Rust and the platform C/C++ linker, then run from this repository:
 

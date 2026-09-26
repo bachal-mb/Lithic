@@ -58,8 +58,10 @@ Installing the lab precompile once with `WithPrecompiles` is insufficient:
 the hook replaces the active precompile map when another precompile is called.
 The disabled L1 candidate must route the gateway address through that hook,
 capture message/chain context from the state transition, and test calls through
-an EVM wrapper after another precompile. This has **not** been patched into
-the Lithosphere app. Its immutable release patch set/manifest must remain
+an EVM wrapper after another precompile. The [pinned keeper lab](NATIVE_CHAIN_KEEPER_LAB_2026_09_27.md)
+now tests the hook and a signed local deploy/failure/recovery path; a wrapper
+after another precompile remains an untested vector. This has **not** been
+patched into the Lithosphere release app. Its immutable patch set/manifest remains
 unchanged until a separately reviewed candidate release definition exists.
 
 ## Failure, gas and receipts
