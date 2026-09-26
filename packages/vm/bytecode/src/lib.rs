@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use sha3::{Digest, Keccak256};
+pub mod values;
 
 pub const MAGIC: &[u8; 7] = b"LITHOVM";
 pub const LEGACY_VERSION: u8 = 1;

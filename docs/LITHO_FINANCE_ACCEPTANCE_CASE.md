@@ -19,7 +19,7 @@ code, deployment provenance or native LithoVM availability.
 | Client behavior | Current native candidate | Required acceptance |
 | --- | --- | --- |
 | Balances and allowances | Typed single/nested maps exist | Port ERC-20 behavior, including allowance edge cases, against the pinned OpenZeppelin 5.0.2 reference |
-| Dynamic name and symbol | Fixed `bytes32` metadata in LAX fixture | String ABI/storage/events; do not silently truncate or replace client strings |
+| Dynamic name and symbol | Fixed `bytes32` metadata in LAX fixture; standalone bounded UTF-8 value codec implemented as a prerequisite | Executable string ABI/storage/events and byte-dependent gas; do not silently truncate or replace client strings |
 | Configurable decimals and supply | `u64`/`u256` values exist | Preserve `uint8` decimals range and exact base-unit supply; test non-18 decimals |
 | Factory creates a child token | Top-level host deploy/init exists | Contract-level creation with deterministic child identity, metering and transaction-wide rollback |
 | Supply and ownership assigned to original caller | Caller context exists | Pass creator explicitly to child initializer; factory must not receive supply or ownership |
