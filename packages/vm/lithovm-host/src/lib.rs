@@ -5,6 +5,7 @@ use lithovm::{
 use lithovm_bytecode::{function_selector, parse, values::Value};
 use sha3::{Digest, Keccak256};
 use std::collections::BTreeMap;
+mod synchronous;
 
 pub type Address = [u8; 32];
 pub type Selector = [u8; 32];
@@ -411,6 +412,21 @@ trait HostValue: Clone + Sized {
         contract: &mut DeployedContract,
         context: &ExecutionContext,
     ) -> ExecutionOutcome<Self>;
+    fn execute_sync<T: StateTransaction>(
+        _vm: &Vm,
+        _state: &mut T,
+        frame: FrameRequest<Self>,
+        _contract: DeployedContract,
+        _events: &mut EventJournal<Self>,
+        _active: &mut Vec<Address>,
+    ) -> Result<(ExecutionResult<Self>, u64), HostFailure> {
+        Err(HostFailure {
+            kind: HostFailureKind::InvalidBytecode,
+            message: "synchronous execution requires typed host values".into(),
+            gas_used: 0,
+            failed_contract: frame.contract,
+        })
+    }
 }
 
 impl HostValue for [u8; 32] {
@@ -436,6 +452,16 @@ impl HostValue for [u8; 32] {
 }
 
 impl HostValue for Value {
+    fn execute_sync<T: StateTransaction>(
+        vm: &Vm,
+        state: &mut T,
+        frame: FrameRequest<Self>,
+        contract: DeployedContract,
+        events: &mut EventJournal<Self>,
+        active: &mut Vec<Address>,
+    ) -> Result<(ExecutionResult<Self>, u64), HostFailure> {
+        synchronous::execute(vm, state, frame, contract, events, active)
+    }
     const DYNAMIC: bool = true;
     fn encoded_size(value: &Self) -> usize {
         match value {
@@ -486,6 +512,22 @@ fn execute_frame<T: StateTransaction, V: HostValue>(
     active_contracts: &mut Vec<Address>,
 ) -> Result<(ExecutionResult<V>, u64), HostFailure> {
     let mut contract = load_contract(state, frame.contract, 0)?;
+    let program = parse(&contract.bytecode).map_err(|error| HostFailure {
+        kind: HostFailureKind::InvalidBytecode,
+        message: error.to_string(),
+        gas_used: 0,
+        failed_contract: frame.contract,
+    })?;
+    if program.bytecode_version() == lithovm_bytecode::SYNC_VERSION {
+        return V::execute_sync(
+            vm,
+            state,
+            frame,
+            contract,
+            committed_events,
+            active_contracts,
+        );
+    }
     let contract_balance = load_balance(state, frame.contract, 0, frame.contract)?;
     let context = ExecutionContext {
         caller: frame.caller,

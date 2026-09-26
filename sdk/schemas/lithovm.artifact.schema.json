@@ -22,8 +22,8 @@
     "compiler": { "const": "lithc" },
     "compilerVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" },
     "contractName": { "type": "string", "minLength": 1 },
-    "target": { "enum": ["lithovm-native-v11", "lithovm-native-v12"] },
-    "bytecodeVersion": { "enum": [11, 12] },
+    "target": { "enum": ["lithovm-native-v11", "lithovm-native-v12", "lithovm-native-v13"] },
+    "bytecodeVersion": { "enum": [11, 12, 13] },
     "sourceHash": { "$ref": "#/$defs/hash" },
     "codeHash": { "$ref": "#/$defs/hash" },
     "entrypoints": {
@@ -44,7 +44,8 @@
   },
   "oneOf": [
     { "properties": { "target": { "const": "lithovm-native-v11" }, "bytecodeVersion": { "const": 11 } } },
-    { "properties": { "target": { "const": "lithovm-native-v12" }, "bytecodeVersion": { "const": 12 } } }
+    { "properties": { "target": { "const": "lithovm-native-v12" }, "bytecodeVersion": { "const": 12 } } },
+    { "properties": { "target": { "const": "lithovm-native-v13" }, "bytecodeVersion": { "const": 13 } } }
   ],
   "$defs": {
     "hash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" }

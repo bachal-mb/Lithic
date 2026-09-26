@@ -11,7 +11,7 @@ This repository contains a preview compiler backend plus development scaffolds. 
 | lithdev | Placeholder shell entrypoint. No deployment execution. |
 | lithls, lithtest, lithsec, lithpkg | Specification-only targets. No usable implementations here. |
 
-The SDK compiler, formatter and linter wrappers invoke the Rust commands from this checkout. lithdev remains a placeholder. The native VM strictly decodes and executes [Native LithoVM ABI v11](LITHOVM_ABI_V11.md) and versions 1 through 10. Version 11 adds typed map storage and checked `u256` add/subtract/comparison. Version 10 adds explicit transactional `require` and `revert`. Versions 9 through 3 add bounded loops, mutable locals, staged calls, transfers, events, context and scalar storage. The [transactional host v1](LITHOVM_HOST_V1.md) resolves registered zero-argument child calls synchronously at the host seam; calldata, return data, general collections, persisted consensus receipts and zk authorization are not implemented. The EVM target remains documented in [EVM backend v1](EVM_BACKEND_V1.md).
+The SDK compiler, formatter and linter wrappers invoke the Rust commands from this checkout. lithdev remains a placeholder. The native VM strictly decodes and executes [Native LithoVM ABI v11](LITHOVM_ABI_V11.md) and versions 1 through 10. Version 11 adds typed map storage and checked `u256` add/subtract/comparison. Version 10 adds explicit transactional `require` and `revert`. Versions 9 through 3 add bounded loops, mutable locals, staged calls, transfers, events, context and scalar storage. The [transactional host v1](LITHOVM_HOST_V1.md) retains deferred zero-argument legacy calls. Local v12/v13 candidates described below add dynamic values and synchronous typed calls. General collections, persisted consensus receipts and zk authorization remain unimplemented. The EVM target remains documented in [EVM backend v1](EVM_BACKEND_V1.md).
 
 ## Local development
 
@@ -21,9 +21,15 @@ equality and returns through the explicit dynamic-value VM API. It includes
 byte limits, byte-dependent gas and rollback tests. Explicit dynamic host APIs
 support atomic initialization, typed top-level calls/results and transaction-wide
 event limits; scalar APIs still reject dynamic bytecode. Source string literals,
-string maps, ordered calls with arguments/return data, factories and native chain
-integration remain unfinished. This candidate is
+string maps, factories and native chain integration remain unfinished. This candidate is
 not included in preview.3 and is not a production release.
+
+The local [v13 synchronous-call candidate](LITHOVM_SYNCHRONOUS_V13.md) adds
+`let result: Type = invoke(target, selector, value, args...);` across the compiler,
+VM and typed transactional host. Caller execution resumes with typed return data;
+events/transfers follow source order and any failure discards the whole transaction.
+Legacy frames retain deferred semantics. This does not provide factory creation,
+native-to-EVM calls or a deployed native chain interface.
 
 Install Rust and the platform C/C++ linker, then run from this repository:
 

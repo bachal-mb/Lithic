@@ -37,6 +37,14 @@ failure kind, failing contract and total gas through the failing frame.
 
 ## Nested-call semantics
 
+### Synchronous calls (local v13 candidate)
+
+The typed host also supports v13 `invoke` with arguments, return data and
+source-ordered effects. It shares this host's transaction and event journal;
+failure in a child or resumed caller discards the complete transaction. See
+[v13 semantics, compatibility and limits](LITHOVM_SYNCHRONOUS_V13.md).
+The deferred behavior below continues to apply to legacy frames.
+
 ### Dynamic values (local v12 candidate)
 
 `deploy_values(DeployRequest<Value>)` and `execute_values(CallRequest<Value>)`

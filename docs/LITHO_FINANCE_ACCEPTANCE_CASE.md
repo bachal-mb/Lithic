@@ -70,6 +70,14 @@ safety branch commit `2822474` passes 24 tests, typecheck, lint and production
 build. Native requests remain disabled. These tests use the real ABI decoder
 but mocked wallet/RPC boundaries; no live application was changed.
 
-Next native implementation steps remain child creation and ordered calls,
-chain/gateway integration, browser-wallet tests and Makalu acceptance. No
-additional workflow description is needed from Amir for this first case.
+The local frontend follow-up through `a38191c` also passes four isolated browser
+tests with a synthetic rejecting wallet; no real transaction is signed.
+The [v13 native-call candidate](LITHOVM_SYNCHRONOUS_V13.md) now provides ordered
+calls with typed arguments/results. A host test pulls tokens from the existing
+v12 token fixture using the caller contract's allowance and proves token-state
+rollback when that caller subsequently rejects. This is not EVM interoperability
+or a complete factory implementation.
+
+Next native implementation steps remain child creation, chain/gateway
+integration, real wallet/signing tests and Makalu acceptance. No additional
+workflow description is needed from Amir for this first case.

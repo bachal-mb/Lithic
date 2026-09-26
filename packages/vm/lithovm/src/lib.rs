@@ -88,6 +88,41 @@ pub struct ContractCall {
     pub depth: u16,
 }
 
+pub struct ValueCall<'a> {
+    pub bytecode: &'a [u8],
+    pub function: &'a str,
+    pub arguments: &'a [Value],
+    pub gas_limit: u64,
+    pub context: &'a ExecutionContext,
+}
+
+pub struct NativeInvocation {
+    pub target: [u8; 32],
+    pub selector: [u8; 32],
+    pub value: [u8; 32],
+    pub arguments: Vec<Value>,
+    pub return_type: ValueType,
+    pub gas_limit: u64,
+}
+
+pub struct InvocationResult {
+    pub value: Value,
+    pub gas_used: u64,
+    pub caller_balance: [u8; 32],
+}
+
+/// All effects must be staged in the same outer transaction. The adapter must
+/// discard them on any VM failure; the VM cannot roll back external effects.
+pub trait ExecutionHost {
+    fn emit(&mut self, event: &EventRecord<Value>) -> Result<(), ExecutionFailure>;
+    fn transfer(&mut self, transfer: &NativeTransfer) -> Result<[u8; 32], ExecutionFailure>;
+    fn invoke(
+        &mut self,
+        request: NativeInvocation,
+        storage: &Storage,
+    ) -> Result<InvocationResult, ExecutionFailure>;
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExecutionContext {
     pub caller: [u8; 32],
@@ -303,9 +338,52 @@ impl Vm {
         storage: &mut Storage,
         context: &ExecutionContext,
     ) -> ExecutionOutcome<Value> {
+        self.execute_values_inner(
+            ValueCall {
+                bytecode: bytes,
+                function: function_name,
+                arguments,
+                gas_limit,
+                context,
+            },
+            storage,
+            None,
+        )
+    }
+
+    /// Candidate v13 execution. The enclosing host, not this method, owns
+    /// atomic commit/rollback of external effects.
+    pub fn execute_hosted(
+        &self,
+        call: ValueCall<'_>,
+        storage: &mut Storage,
+        host: &mut dyn ExecutionHost,
+    ) -> ExecutionOutcome<Value> {
+        self.execute_values_inner(call, storage, Some(host))
+    }
+
+    fn execute_values_inner(
+        &self,
+        call: ValueCall<'_>,
+        storage: &mut Storage,
+        host: Option<&mut dyn ExecutionHost>,
+    ) -> ExecutionOutcome<Value> {
+        let ValueCall {
+            bytecode: bytes,
+            function: function_name,
+            arguments,
+            gas_limit,
+            context,
+        } = call;
         let mut gas_used = 0;
         let result = (|| {
             let program = parse(bytes)?;
+            if program.bytecode_version() == lithovm_bytecode::SYNC_VERSION && host.is_none() {
+                bail!("synchronous program requires an execution host");
+            }
+            if program.bytecode_version() != lithovm_bytecode::SYNC_VERSION && host.is_some() {
+                bail!("hosted execution requires synchronous bytecode");
+            }
             validate_context(context)?;
             // Validate individual and aggregate bounds before copying arguments.
             values::encoded_size(arguments)?;
@@ -353,6 +431,7 @@ impl Vm {
                 &mut staged,
                 Some(context),
                 &mut gas_used,
+                host,
             )?;
             *storage = staged;
             Ok(result)
@@ -419,6 +498,7 @@ fn execute_program(
         storage,
         context,
         observed_gas,
+        None,
     )?;
     let scalar = |value| match value {
         Value::Word(_, word) => Ok(word),
@@ -447,6 +527,7 @@ fn execute_program(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_dynamic_program(
     program: &Program,
     function_name: &str,
@@ -455,6 +536,7 @@ fn execute_dynamic_program(
     storage: &mut Storage,
     context: Option<&ExecutionContext>,
     observed_gas: &mut u64,
+    host: Option<&mut dyn ExecutionHost>,
 ) -> Result<ExecutionResult<Value>> {
     let function = program
         .functions
@@ -501,6 +583,7 @@ fn execute_dynamic_program(
     }
     *observed_gas = gas_used;
     let mut environment = RuntimeEnvironment {
+        host,
         storage_fields: &program.storage,
         map_fields: &program.maps,
         event_definitions: &program.events,
@@ -684,7 +767,8 @@ impl StackValue {
     }
 }
 
-struct RuntimeEnvironment<'a> {
+struct RuntimeEnvironment<'a, 'h> {
+    host: Option<&'h mut dyn ExecutionHost>,
     storage_fields: &'a [lithovm_bytecode::StorageField],
     map_fields: &'a [lithovm_bytecode::MapField],
     event_definitions: &'a [lithovm_bytecode::EventDefinition],
@@ -704,7 +788,7 @@ fn execute_expression(
     parameter_types: &[ValueType],
     return_type: ValueType,
     mut meter: GasMeter,
-    environment: &RuntimeEnvironment<'_>,
+    environment: &RuntimeEnvironment<'_, '_>,
     observed_gas: &mut u64,
 ) -> Result<ExecutionResult<Value>> {
     let result = (|| {
@@ -739,7 +823,7 @@ fn evaluate_expression(
     arguments: &[StackValue],
     _parameter_types: &[ValueType],
     locals: &[StackValue],
-    environment: &RuntimeEnvironment<'_>,
+    environment: &RuntimeEnvironment<'_, '_>,
     meter: &mut GasMeter,
 ) -> Result<StackValue> {
     let mut stack: Vec<StackValue> = Vec::new();
@@ -955,7 +1039,7 @@ fn execute_statements(
     parameter_types: &[ValueType],
     return_type: ValueType,
     mut meter: GasMeter,
-    environment: &mut RuntimeEnvironment<'_>,
+    environment: &mut RuntimeEnvironment<'_, '_>,
     observed_gas: &mut u64,
 ) -> Result<ExecutionResult<Value>> {
     if meter.used > meter.limit {
@@ -998,11 +1082,85 @@ fn execute_block(
     parameter_types: &[ValueType],
     locals: &mut Vec<StackValue>,
     meter: &mut GasMeter,
-    environment: &mut RuntimeEnvironment<'_>,
+    environment: &mut RuntimeEnvironment<'_, '_>,
 ) -> Result<Option<StackValue>> {
     for statement in statements {
         meter.charge(INSTRUCTION_GAS)?;
         match statement {
+            Statement::Invoke {
+                return_type,
+                target,
+                selector,
+                value,
+                arguments: inputs,
+            } => {
+                meter.charge(CONTRACT_CALL_GAS)?;
+                let context = environment
+                    .context
+                    .ok_or_else(|| anyhow!("invoke requires context"))?;
+                if context.call_depth >= MAX_CALL_DEPTH {
+                    bail!("contract call depth limit reached");
+                }
+                let mut operands = Vec::with_capacity(3);
+                for expression in [target, selector, value] {
+                    meter.charge(expression_gas(expression))?;
+                    operands.push(evaluate_expression(
+                        expression,
+                        arguments,
+                        parameter_types,
+                        locals,
+                        environment,
+                        meter,
+                    )?);
+                }
+                let mut values = Vec::with_capacity(inputs.len());
+                for (_, expression) in inputs {
+                    meter.charge(expression_gas(expression))?;
+                    let value = evaluate_expression(
+                        expression,
+                        arguments,
+                        parameter_types,
+                        locals,
+                        environment,
+                        meter,
+                    )?;
+                    meter.charge(value.byte_cost())?;
+                    values.push(value.into_value());
+                }
+                values::encoded_size(&values)?;
+                let request = NativeInvocation {
+                    target: operands[0].word,
+                    selector: operands[1].word,
+                    value: operands[2].word,
+                    arguments: values,
+                    return_type: *return_type,
+                    gas_limit: meter.limit - meter.used,
+                };
+                let host = environment
+                    .host
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("invoke requires an execution host"))?;
+                let returned = match host.invoke(request, environment.storage) {
+                    Ok(result) => {
+                        meter.charge(result.gas_used)?;
+                        result
+                    }
+                    Err(failure) => {
+                        meter.charge(failure.gas_used)?;
+                        return Err(ClassifiedFault::new(failure.kind, failure.message).into());
+                    }
+                };
+                values::encoded_size(std::slice::from_ref(&returned.value))?;
+                if let Value::String(text) = &returned.value {
+                    meter.charge(text.len() as u64)?;
+                }
+                let returned_value = StackValue::from_value(&returned.value);
+                if returned_value.value_type != *return_type {
+                    bail!("invoke return type mismatch");
+                }
+                environment.remaining_balance = returned.caller_balance;
+                locals.push(returned_value);
+            }
             Statement::Let {
                 value_type,
                 expression,
@@ -1227,10 +1385,15 @@ fn execute_block(
                     }
                     environment.dynamic_event_bytes += event_bytes;
                 }
-                environment.events.push(EventRecord {
+                let record = EventRecord {
                     name: definition.name.clone(),
                     fields,
-                });
+                };
+                if let Some(host) = environment.host.as_mut() {
+                    host.emit(&record)
+                        .map_err(|failure| ClassifiedFault::new(failure.kind, failure.message))?;
+                }
+                environment.events.push(record);
             }
             Statement::Transfer { recipient, amount } => {
                 meter.charge(NATIVE_TRANSFER_GAS)?;
@@ -1263,10 +1426,17 @@ fn execute_block(
                 environment.remaining_balance =
                     subtract_u256(environment.remaining_balance, amount.word)
                         .ok_or_else(|| anyhow!("native transfer exceeds contract balance"))?;
-                environment.transfers.push(NativeTransfer {
+                let transfer = NativeTransfer {
                     recipient: recipient.word,
                     amount: amount.word,
-                });
+                };
+                if let Some(host) = environment.host.as_mut() {
+                    environment.remaining_balance = host
+                        .transfer(&transfer)
+                        .map_err(|failure| ClassifiedFault::new(failure.kind, failure.message))?;
+                } else {
+                    environment.transfers.push(transfer);
+                }
             }
             Statement::Call {
                 target,

@@ -16,6 +16,7 @@ pub const FAILURE_VERSION: u8 = 10;
 pub const VERSION: u8 = 11;
 /// Dynamic-value candidate; scalar programs continue to encode as v11.
 pub const STRING_VERSION: u8 = 12;
+pub const SYNC_VERSION: u8 = 13;
 pub const MAX_FUNCTIONS: usize = 1024;
 pub const MAX_PARAMETERS: usize = 64;
 pub const MAX_NAME_BYTES: usize = 255;
@@ -72,6 +73,13 @@ pub enum ReturnValue {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Statement {
+    Invoke {
+        return_type: ValueType,
+        target: Vec<Instruction>,
+        selector: Vec<Instruction>,
+        value: Vec<Instruction>,
+        arguments: Vec<(ValueType, Vec<Instruction>)>,
+    },
     Let {
         value_type: ValueType,
         expression: Vec<Instruction>,
@@ -203,6 +211,12 @@ struct ValidationSchema<'a> {
 
 impl Program {
     pub fn bytecode_version(&self) -> u8 {
+        if self.functions.iter().any(|f| {
+            matches!(&f.return_value,
+            ReturnValue::Statements(body) if contains_statement(body, true))
+        }) {
+            return SYNC_VERSION;
+        }
         let strings = self
             .storage
             .iter()
@@ -227,6 +241,7 @@ impl Program {
         validate_storage_layout(&self.storage, &self.maps)?;
         validate_events(&self.events)?;
         validate_functions(&self.functions, &self.storage, &self.maps, &self.events)?;
+        validate_call_mode(self)?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC);
         bytes.push(self.bytecode_version());
@@ -288,7 +303,7 @@ pub fn parse(bytes: &[u8]) -> Result<Program> {
         bail!("invalid LithoVM bytecode magic");
     }
     let version = reader.byte()?;
-    if !(LEGACY_VERSION..=STRING_VERSION).contains(&version) {
+    if !(LEGACY_VERSION..=SYNC_VERSION).contains(&version) {
         bail!("unsupported LithoVM bytecode version {version}");
     }
     let storage = if version >= STORAGE_VERSION {
@@ -455,10 +470,34 @@ pub fn parse(bytes: &[u8]) -> Result<Program> {
         events,
         functions,
     };
-    if version < STRING_VERSION && program.bytecode_version() == STRING_VERSION {
-        bail!("string values require LithoVM v12");
+    let required = program.bytecode_version();
+    if required > VERSION && version < required {
+        bail!("program requires LithoVM v{required}");
     }
+    validate_call_mode(&program)?;
     Ok(program)
+}
+
+fn contains_statement(body: &[Statement], invoke: bool) -> bool {
+    body.iter().any(|statement| match statement {
+        Statement::Invoke { .. } => invoke,
+        Statement::Call { .. } => !invoke,
+        Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => contains_statement(then_branch, invoke) || contains_statement(else_branch, invoke),
+        Statement::Repeat { body, .. } => contains_statement(body, invoke),
+        _ => false,
+    })
+}
+
+fn validate_call_mode(program: &Program) -> Result<()> {
+    if program.bytecode_version() == SYNC_VERSION && program.functions.iter().any(|f|
+        matches!(&f.return_value, ReturnValue::Statements(body) if contains_statement(body, false))) {
+        bail!("cannot mix synchronous invoke and deferred call_contract in one program");
+    }
+    Ok(())
 }
 
 pub fn validate_word(value_type: ValueType, word: &[u8; 32]) -> Result<()> {
@@ -637,6 +676,24 @@ fn encode_statements(bytes: &mut Vec<u8>, statements: &[Statement]) -> Result<()
     push_u16(bytes, statements.len())?;
     for statement in statements {
         match statement {
+            Statement::Invoke {
+                return_type,
+                target,
+                selector,
+                value,
+                arguments,
+            } => {
+                bytes.push(14);
+                bytes.push(*return_type as u8);
+                encode_expression(bytes, target)?;
+                encode_expression(bytes, selector)?;
+                encode_expression(bytes, value)?;
+                push_u16(bytes, arguments.len())?;
+                for (ty, expression) in arguments {
+                    bytes.push(*ty as u8);
+                    encode_expression(bytes, expression)?;
+                }
+            }
             Statement::Let {
                 value_type,
                 expression,
@@ -822,6 +879,30 @@ fn decode_statements(reader: &mut Reader<'_>, version: u8, depth: usize) -> Resu
     let mut statements = Vec::with_capacity(statement_count);
     for _ in 0..statement_count {
         statements.push(match reader.byte()? {
+            14 if version >= SYNC_VERSION => {
+                let return_type = ValueType::from_byte(reader.byte()?)?;
+                let target = decode_expression(reader, version)?;
+                let selector = decode_expression(reader, version)?;
+                let value = decode_expression(reader, version)?;
+                let count = reader.u16()? as usize;
+                if count > MAX_PARAMETERS {
+                    bail!("too many invocation arguments");
+                }
+                let mut arguments = Vec::with_capacity(count);
+                for _ in 0..count {
+                    arguments.push((
+                        ValueType::from_byte(reader.byte()?)?,
+                        decode_expression(reader, version)?,
+                    ));
+                }
+                Statement::Invoke {
+                    return_type,
+                    target,
+                    selector,
+                    value,
+                    arguments,
+                }
+            }
             1 => Statement::Let {
                 value_type: ValueType::from_byte(reader.byte()?)?,
                 expression: decode_expression(reader, version)?,
@@ -1008,6 +1089,28 @@ fn validate_statements(
             bail!("unreachable statement after terminal return or branch");
         }
         match statement {
+            Statement::Invoke {
+                return_type,
+                target,
+                selector,
+                value,
+                arguments,
+            } => {
+                validate_expression(target, parameters, &locals, schema, ValueType::Address)?;
+                validate_expression(selector, parameters, &locals, schema, ValueType::Bytes32)?;
+                validate_expression(value, parameters, &locals, schema, ValueType::U256)?;
+                if arguments.len() > MAX_PARAMETERS {
+                    bail!("too many invocation arguments");
+                }
+                for (ty, expression) in arguments {
+                    validate_expression(expression, parameters, &locals, schema, *ty)?;
+                }
+                if locals.len() >= MAX_LOCALS {
+                    bail!("too many local bindings");
+                }
+                locals.push(*return_type);
+                mutable.push(false);
+            }
             Statement::Let {
                 value_type,
                 expression,
@@ -1296,7 +1399,7 @@ mod tests {
         trailing.push(0);
         assert!(parse(&trailing).is_err());
         let mut version = bytes;
-        version[MAGIC.len()] = STRING_VERSION + 1;
+        version[MAGIC.len()] = SYNC_VERSION + 1;
         assert!(parse(&version).is_err());
     }
 

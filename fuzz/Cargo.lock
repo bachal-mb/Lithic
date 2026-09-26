@@ -153,6 +153,7 @@ dependencies = [
  "lithic-lithovm",
  "lithovm",
  "lithovm-bytecode",
+ "lithovm-host",
 ]
 
 [[package]]
@@ -186,6 +187,15 @@ name = "lithovm-bytecode"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "sha3",
+]
+
+[[package]]
+name = "lithovm-host"
+version = "0.1.0"
+dependencies = [
+ "lithovm",
+ "lithovm-bytecode",
  "sha3",
 ]
 

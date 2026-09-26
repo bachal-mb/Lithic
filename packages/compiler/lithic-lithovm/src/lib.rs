@@ -524,6 +524,54 @@ impl BodyParser<'_> {
         };
         self.skip_whitespace();
         self.expect_byte(b'=', "expected '=' in local binding")?;
+        self.skip_whitespace();
+        if self.consume_keyword("invoke") {
+            if mutable {
+                return Err("invoke result bindings must be immutable".into());
+            }
+            let return_type = annotated_type.ok_or("invoke requires an explicit return type")?;
+            self.skip_whitespace();
+            self.expect_byte(b'(', "expected '(' after invoke")?;
+            let source = self.take_expression_until(b')')?.to_owned();
+            self.skip_whitespace();
+            self.expect_byte(b';', "expected ';' after invoke")?;
+            let parts = source.split(',').collect::<Vec<_>>();
+            if parts.len() < 3 || parts.len() > 67 {
+                return Err(
+                    "invoke requires target, selector, value and at most 64 arguments".into(),
+                );
+            }
+            let mut expressions = parts
+                .iter()
+                .map(|part| self.compile_expression(part))
+                .collect::<Result<Vec<_>, _>>()?;
+            for (index, ty) in [ValueType::Address, ValueType::Bytes32, ValueType::U256]
+                .into_iter()
+                .enumerate()
+            {
+                coerce_expression(&mut expressions[index], ty)?;
+            }
+            let mut expressions = expressions.into_iter();
+            let target = expressions.next().unwrap().0;
+            let selector = expressions.next().unwrap().0;
+            let value = expressions.next().unwrap().0;
+            let arguments = expressions
+                .map(|(expression, ty)| (ty, expression))
+                .collect();
+            if self.local_names.len() >= MAX_LOCALS {
+                return Err("too many local bindings".into());
+            }
+            self.local_names.push(name);
+            self.local_types.push(return_type);
+            self.local_mutability.push(false);
+            return Ok(Statement::Invoke {
+                return_type,
+                target,
+                selector,
+                value,
+                arguments,
+            });
+        }
         let expression_source = self.take_expression_until(b';')?.to_owned();
         let (expression, inferred_type) = self.compile_expression(&expression_source)?;
         let value_type = annotated_type.unwrap_or(inferred_type);

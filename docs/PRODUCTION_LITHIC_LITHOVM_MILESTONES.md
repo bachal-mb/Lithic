@@ -51,7 +51,9 @@ Status: context, events, staged native transfers and outbound call intents imple
 - typed ordered event schemas and successful-call event records implemented;
 - balance-checked staged native transfers implemented;
 - balance-checked staged outbound call intents and a depth limit implemented;
-- remaining synchronous host execution, return data and reentrancy policy;
+- local [v13 synchronous calls](LITHOVM_SYNCHRONOUS_V13.md) now carry typed
+  arguments/results, preserve effect ordering and reject reentrancy with full-tree
+  rollback; factory creation, persistent chain integration and policy approval remain;
 - context opcodes use the current versioned instruction gas schedule; host-call gas remains;
 - deterministic receipts and observable failure semantics.
 - atomic host deployment derives selectors from validated bytecode and commits
