@@ -12,8 +12,9 @@ v14 atomic child creation, with a finance-factory fixture and host-generated
 [deployment records](LITHOSCAN_NATIVE_RECEIPTS_V1.md). These supersede the older
 implementation-gap statements below, not the chain integration requirements.
 
-The client confirmed EVM-gateway-first, salted child identity and
-fail-whole-native-transaction behavior on 2026-09-26. These resolve the two
+The client confirmed EVM-gateway-first, salted child identity,
+fail-whole-native-transaction behavior and direct-wallet-only top-level
+deployment on 2026-09-26. These resolve the two
 profile mismatches between this proposal and the candidate:
 
 - Creation identity: v14 uses a factory-scoped salt and code hash. Salted
@@ -99,8 +100,9 @@ security correctness.
 5. The confirmed child-creation profile uses a creator-scoped salt and code
    hash, not a counter. Specify salt reservation/front-running and collision
    checks against native/EVM code and reserved precompile/module identities.
-   Top-level gateway deployment still needs an authenticated nonce handoff and
-   a rule for repeated same-code deployments in one EVM transaction.
+   Top-level gateway deployment is restricted to the direct transaction sender
+   in the first profile. The keeper still needs an authenticated `msg.Nonce()`
+   handoff and replay/simulation evidence.
 6. Wrap native payload bytes in a Solidity gateway ABI; retain full bytes32
    native selectors inside the payload, distinct from EVM four-byte selectors.
    Specify log topics/data and emitter identity. Frontend validation must use

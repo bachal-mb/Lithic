@@ -33,6 +33,9 @@ or currently running network match the lab.
   carries full native selectors and rejects trailing/aliased payloads. The
   request's caller and block fields are overwritten from the EVM frame/context.
   This registry is not installed in the chain app.
+- Direct-wallet top-level deploy succeeds; an EVM wrapper's top-level deploy
+  reverts before native execution. A wrapper may still call an existing native
+  contract. Mismatched signed-sender metadata is rejected.
 
 ## Verification commands
 
@@ -56,7 +59,7 @@ artifact or production installation recipe.
 
 ## Unclosed production controls
 
-The internal FFI JSON request, nonce/chain-ID source, provisional ABI precharge
+The internal FFI JSON request, live keeper nonce/chain-ID handoff, provisional ABI precharge
 and dynamic copy pricing, event topic and native state namespace are not
 consensus-approved. Malformed-payload decoding now has an experimental static
 precharge; complete gas accounting and benchmarks remain open.
@@ -64,6 +67,6 @@ Native value, bank/EVM balances, native-to-EVM callbacks and general arrays are
 unsupported. The lab has no live transaction authentication, signed broadcast,
 RPC, indexed/finalized receipt, network upgrade, replay test, independent
 security review or Makalu recovery test. The client confirmed gateway route,
-salted child identity and fail-whole policy; consensus gas/ABI, salt
+salted child identity, fail-whole policy and direct-wallet deployment; consensus gas/ABI, salt
 reservation/collision, receipt and upgrade reviews remain required before
 production-facing registration or activation.

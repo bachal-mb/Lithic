@@ -126,8 +126,8 @@ func TestEphemeralEVMPrecompileCallAndOuterRevert(t *testing.T) {
 		CanTransfer: func(vm.StateDB, common.Address, *big.Int) bool { return true },
 		Transfer:    func(vm.StateDB, common.Address, common.Address, *big.Int) {},
 		BlockNumber: big.NewInt(11), Time: big.NewInt(22),
-	}, vm.TxContext{Origin: common.HexToAddress("0xdead")}, db, params.AllEthashProtocolChanges, vm.Config{})
-	RegisterLabPrecompile(evm, key, Environment{ChainID: 700777, Nonce: 1})
+	}, vm.TxContext{Origin: common.HexToAddress("0x0000000000000000000000000000000000000009")}, db, params.AllEthashProtocolChanges, vm.Config{})
+	RegisterLabPrecompile(evm, key, AuthenticatedTransaction{Origin: evm.TxContext.Origin, ChainID: 700777, Nonce: 1})
 	precompile, ok := evm.Precompile(LabAddress)
 	if !ok || precompile.RequiredGas([]byte{1, 2, 3}) != 512 {
 		t.Fatal("gateway decode gas not prepaid")
@@ -146,8 +146,15 @@ func TestEphemeralEVMPrecompileCallAndOuterRevert(t *testing.T) {
 		t.Fatal(err)
 	}
 	caller := vm.AccountRef(common.HexToAddress("0x0000000000000000000000000000000000000009"))
+	wrapper := vm.AccountRef(common.HexToAddress("0x000000000000000000000000000000000000000a"))
 	if _, left, err := evm.Call(caller, LabAddress, []byte{1, 2, 3, 4}, 1000, big.NewInt(0)); err == nil || left != 0 {
 		t.Fatalf("malformed gateway input did not consume gas: %v %d", err, left)
+	}
+	if _, left, err := evm.Call(wrapper, LabAddress, payload, 1000000, big.NewInt(0)); err != vm.ErrExecutionReverted || left == 0 {
+		t.Fatalf("wrapper deployment was not rejected: %v %d", err, left)
+	}
+	if len(db.Logs()) != 0 {
+		t.Fatal("wrapper deployment emitted native log")
 	}
 	outer := db.Snapshot()
 	output, left, err := evm.Call(caller, LabAddress, payload, 1000000, big.NewInt(0))
@@ -192,6 +199,16 @@ func TestEphemeralEVMPrecompileCallAndOuterRevert(t *testing.T) {
 	getResult, err := DecodeGatewayResult(getOutput)
 	if err != nil || !strings.HasSuffix(hex.EncodeToString(getResult), "0007") {
 		t.Fatalf("native gateway call: %v %x", err, getResult)
+	}
+	if _, _, err := evm.Call(wrapper, LabAddress, getPayload, 1000000, big.NewInt(0)); err != nil {
+		t.Fatalf("wrapper call to existing native contract should remain allowed: %v", err)
+	}
+	RegisterLabPrecompile(evm, key, AuthenticatedTransaction{Origin: wrapper.Address(), ChainID: 700777, Nonce: 1})
+	if _, left, err := evm.Call(caller, LabAddress, getPayload, 1000000, big.NewInt(0)); err == nil || left != 0 {
+		t.Fatalf("mismatched authenticated transaction context accepted: %v %d", err, left)
+	}
+	if len(db.Logs()) != 1 {
+		t.Fatal("rejected context changed native logs")
 	}
 	db.RevertToSnapshot(outer)
 	cache, _ = db.GetCacheContext()

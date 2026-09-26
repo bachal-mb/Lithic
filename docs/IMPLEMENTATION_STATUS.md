@@ -43,7 +43,8 @@ bounded persisted storage, a Rust C ABI, Go StateDB rollback/commit/reload and
 an ephemeral EVM precompile call against pinned Evmos/SDK sources. This is not
 an app registration, deployed RPC, Makalu contract or production gas/ABI rule.
 The client-confirmed first profile has a [strict EVM ABI candidate](NATIVE_GATEWAY_CANDIDATE_V1.md)
-with full native selectors and provisional gas precharge; it remains test-only.
+with full native selectors, provisional gas precharge and direct-wallet-only
+top-level deployment; it remains test-only.
 
 Install Rust and the platform C/C++ linker, then run from this repository:
 
