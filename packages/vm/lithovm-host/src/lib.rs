@@ -2,7 +2,7 @@ use lithovm::{
     EventRecord, ExecutionContext, ExecutionFailure, ExecutionOutcome, ExecutionResult,
     FailureKind, Storage, Vm,
 };
-use lithovm_bytecode::{function_selector, parse, values::Value};
+use lithovm_bytecode::{function_selector, parse, values::Value, Program};
 use sha3::{Digest, Keccak256};
 use std::collections::BTreeMap;
 pub mod deployment_status;
@@ -39,6 +39,27 @@ pub struct DeployedContract {
     pub code_hash: [u8; 32],
     pub storage: Storage,
     pub entrypoints: BTreeMap<Selector, String>,
+}
+
+fn validated_entrypoints(
+    program: &Program,
+    address: Address,
+) -> Result<BTreeMap<Selector, String>, HostFailure> {
+    let mut entrypoints = BTreeMap::new();
+    for function in &program.functions {
+        if entrypoints
+            .insert(function_selector(function), function.name.clone())
+            .is_some()
+        {
+            return Err(HostFailure {
+                kind: HostFailureKind::InvalidEntrypoint,
+                message: "canonical function selector collision".into(),
+                gas_used: 0,
+                failed_contract: address,
+            });
+        }
+    }
+    Ok(entrypoints)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -228,20 +249,10 @@ impl<S: TransactionalState> TransactionalHost<S> {
                 failed_contract: address,
             });
         }
-        let mut entrypoints = BTreeMap::new();
-        for function in &program.functions {
-            if entrypoints
-                .insert(function_selector(function), function.name.clone())
-                .is_some()
-            {
-                return DeployOutcome::Failure(HostFailure {
-                    kind: HostFailureKind::InvalidEntrypoint,
-                    message: "canonical function selector collision".into(),
-                    gas_used: 0,
-                    failed_contract: address,
-                });
-            }
-        }
+        let entrypoints = match validated_entrypoints(&program, address) {
+            Ok(entrypoints) => entrypoints,
+            Err(failure) => return DeployOutcome::Failure(failure),
+        };
         let mut transaction = match self.state.begin_transaction() {
             Ok(transaction) => transaction,
             Err(message) => return DeployOutcome::Failure(state_failure(message, 0, address)),
@@ -911,5 +922,28 @@ impl StateTransaction for InMemoryTransaction<'_> {
     fn commit(self) -> Result<(), String> {
         *self.parent = self.staged;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod entrypoint_tests {
+    use super::*;
+
+    #[test]
+    fn selector_registration_rejects_duplicate_entries_with_contract_identity() {
+        let artifact =
+            lithic_lithovm::compile("contract Counter { pub fn get() -> u64 { return 1; } }")
+                .unwrap();
+        let bytecode = hex::decode(&artifact.bytecode[2..]).unwrap();
+        let mut program = parse(&bytecode).unwrap();
+        let address = [7; 32];
+        let entries = validated_entrypoints(&program, address).unwrap();
+        assert_eq!(entries.len(), 1);
+
+        program.functions.push(program.functions[0].clone());
+        let failure = validated_entrypoints(&program, address).unwrap_err();
+        assert_eq!(failure.kind, HostFailureKind::InvalidEntrypoint);
+        assert_eq!(failure.failed_contract, address);
+        assert_eq!(failure.gas_used, 0);
     }
 }

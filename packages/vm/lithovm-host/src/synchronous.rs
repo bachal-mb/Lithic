@@ -130,20 +130,7 @@ impl<T: StateTransaction> Adapter<'_, T> {
                 gas_used: 0,
                 failed_contract: request.template,
             })?;
-            let mut entrypoints = BTreeMap::new();
-            for function in &program.functions {
-                if entrypoints
-                    .insert(function_selector(function), function.name.clone())
-                    .is_some()
-                {
-                    return Err(HostFailure {
-                        kind: HostFailureKind::InvalidEntrypoint,
-                        message: "canonical function selector collision".into(),
-                        gas_used: 0,
-                        failed_contract: address,
-                    });
-                }
-            }
+            let entrypoints = validated_entrypoints(&program, address)?;
             // The template is code only. Never copy its storage or native balance.
             store_contract(
                 self.state,
