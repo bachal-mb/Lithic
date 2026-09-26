@@ -67,6 +67,12 @@ implementations remain external integration work.
 
 ## Remaining gates
 
+Contract-level creation is now available in the separate local
+[v14 candidate](LITHOVM_CREATION_V14.md). Its code-template/salt identity,
+mandatory boolean initializer and child code-size/gas rules do not change this
+top-level v1 interface. Both paths share the outer transaction; neither provides
+authenticated chain submission or deployment approval.
+
 - consensus state/bank adapter and authenticated nonce handling;
 - deploy/call RPC, signing and fee simulation;
 - code-size/deployment gas pricing and denial-of-service limits;

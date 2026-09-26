@@ -21,15 +21,22 @@ equality and returns through the explicit dynamic-value VM API. It includes
 byte limits, byte-dependent gas and rollback tests. Explicit dynamic host APIs
 support atomic initialization, typed top-level calls/results and transaction-wide
 event limits; scalar APIs still reject dynamic bytecode. Source string literals,
-string maps, factories and native chain integration remain unfinished. This candidate is
+string maps and native chain integration remain unfinished. This candidate is
 not included in preview.3 and is not a production release.
 
 The local [v13 synchronous-call candidate](LITHOVM_SYNCHRONOUS_V13.md) adds
 `let result: Type = invoke(target, selector, value, args...);` across the compiler,
 VM and typed transactional host. Caller execution resumes with typed return data;
 events/transfers follow source order and any failure discards the whole transaction.
-Legacy frames retain deferred semantics. This does not provide factory creation,
-native-to-EVM calls or a deployed native chain interface.
+Legacy frames retain deferred semantics. This does not provide native-to-EVM
+calls or a deployed native chain interface.
+
+The local [v14 creation candidate](LITHOVM_CREATION_V14.md) adds atomic child
+creation from deployed code templates, mandatory initialization, deterministic
+salted addresses and rollback. A finance factory fixture initializes fresh v12
+tokens across all 16 feature profiles with creator-owned supply. Salt policy,
+consensus pricing, persisted creation receipts, security review and native chain
+integration remain open; this is not a production factory release.
 
 Install Rust and the platform C/C++ linker, then run from this repository:
 

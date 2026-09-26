@@ -10,6 +10,28 @@ mod synchronous;
 pub type Address = [u8; 32];
 pub type Selector = [u8; 32];
 
+/// Candidate limits/pricing, not an approved consensus schedule.
+pub const MAX_CHILD_CODE_BYTES: usize = 65536;
+pub const CHILD_CREATE_BASE_GAS: u64 = 100;
+
+pub fn child_contract_address(
+    creator: Address,
+    salt: [u8; 32],
+    code_hash: [u8; 32],
+    chain_id: u64,
+) -> Address {
+    let mut hash = Keccak256::new();
+    hash.update(b"LITHOVM_CREATE_V1");
+    hash.update(chain_id.to_be_bytes());
+    hash.update(creator);
+    hash.update(salt);
+    hash.update(code_hash);
+    let digest = hash.finalize();
+    let mut address = [0; 32];
+    address[12..].copy_from_slice(&digest[12..]);
+    address
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeployedContract {
     pub bytecode: Vec<u8>,
@@ -518,7 +540,7 @@ fn execute_frame<T: StateTransaction, V: HostValue>(
         gas_used: 0,
         failed_contract: frame.contract,
     })?;
-    if program.bytecode_version() == lithovm_bytecode::SYNC_VERSION {
+    if program.bytecode_version() >= lithovm_bytecode::SYNC_VERSION {
         return V::execute_sync(
             vm,
             state,

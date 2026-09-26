@@ -19,9 +19,9 @@ code, deployment provenance or native LithoVM availability.
 | Client behavior | Current native candidate | Required acceptance |
 | --- | --- | --- |
 | Balances and allowances | Typed single/nested maps exist | Port ERC-20 behavior, including allowance edge cases, against the pinned OpenZeppelin 5.0.2 reference |
-| Dynamic name and symbol | Fixed `bytes32` metadata in LAX fixture; standalone bounded UTF-8 value codec implemented as a prerequisite | Executable string ABI/storage/events and byte-dependent gas; do not silently truncate or replace client strings |
+| Dynamic name and symbol | v12 executable UTF-8 ABI/storage/events with byte gas; v14 factory passes exact metadata into fresh tokens | Chain encoding, wallet/explorer display and broader conformance; never silently truncate client strings |
 | Configurable decimals and supply | `u64`/`u256` values exist | Preserve `uint8` decimals range and exact base-unit supply; test non-18 decimals |
-| Factory creates a child token | Top-level host deploy/init exists | Contract-level creation with deterministic child identity, metering and transaction-wide rollback |
+| Factory creates a child token | v14 code-template creation with salted identity, bounded code/gas and atomic initialization; all 16 finance profiles tested | Approved salt/address/gas policy, persistent creation receipts, chain integration and Makalu acceptance |
 | Supply and ownership assigned to original caller | Caller context exists | Pass creator explicitly to child initializer; factory must not receive supply or ownership |
 | Mint/burn/pause/ownership flags | Separate finance_token_v11 fixture implements the four flags, authorization, delegated burn and ownership changes; 16 combinations tested | Full metadata/factory integration and OpenZeppelin differential conformance; LAX remains separate |
 | TokenCreated receipt | Native typed events exist | Address plus string metadata, indexed event policy and committed receipt decoding |
@@ -29,8 +29,8 @@ code, deployment provenance or native LithoVM availability.
 
 This factory only creates a new token. It does not pull existing ERC-20s.
 Native-to-EVM `transferFrom` interoperability is a separate later acceptance
-case for the other factories. Factory creation itself still requires ordered
-child execution and the newly created address to be available to the parent.
+case for the other factories. Local v14 creation now provides ordered child
+initialization and the new address to the parent; this is not a chain deployment.
 
 The LAX fixture is not a drop-in replacement: it has fixed metadata and supply,
 and does not implement configurable minting, pausing or ownership. Its approved
@@ -78,6 +78,12 @@ v12 token fixture using the caller contract's allowance and proves token-state
 rollback when that caller subsequently rejects. This is not EVM interoperability
 or a complete factory implementation.
 
-Next native implementation steps remain child creation, chain/gateway
-integration, real wallet/signing tests and Makalu acceptance. No additional
-workflow description is needed from Amir for this first case.
+The [v14 factory candidate](LITHOVM_CREATION_V14.md) now creates a fresh token
+from a pinned deployed template, with metadata and creator identity passed to
+its initializer. All 16 profiles, non-18 decimals, balances/ownership, untouched
+template storage, failure rollback and collisions are covered locally.
+
+Next native implementation steps are consensus deployment/creation receipts,
+chain/gateway integration, real wallet/signing tests and Makalu acceptance.
+Public-factory salt handling and creation pricing need policy/security review.
+No additional workflow description is needed from Amir for this first case.

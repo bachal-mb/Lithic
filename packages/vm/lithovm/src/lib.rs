@@ -105,6 +105,15 @@ pub struct NativeInvocation {
     pub gas_limit: u64,
 }
 
+pub struct NativeCreation {
+    pub template: [u8; 32],
+    pub salt: [u8; 32],
+    pub initializer: [u8; 32],
+    pub value: [u8; 32],
+    pub arguments: Vec<Value>,
+    pub gas_limit: u64,
+}
+
 pub struct InvocationResult {
     pub value: Value,
     pub gas_used: u64,
@@ -114,6 +123,17 @@ pub struct InvocationResult {
 /// All effects must be staged in the same outer transaction. The adapter must
 /// discard them on any VM failure; the VM cannot roll back external effects.
 pub trait ExecutionHost {
+    fn create(
+        &mut self,
+        _request: NativeCreation,
+        _storage: &Storage,
+    ) -> Result<InvocationResult, ExecutionFailure> {
+        Err(ExecutionFailure {
+            kind: FailureKind::Trap,
+            message: "host does not support creation".into(),
+            gas_used: 0,
+        })
+    }
     fn emit(&mut self, event: &EventRecord<Value>) -> Result<(), ExecutionFailure>;
     fn transfer(&mut self, transfer: &NativeTransfer) -> Result<[u8; 32], ExecutionFailure>;
     fn invoke(
@@ -351,7 +371,7 @@ impl Vm {
         )
     }
 
-    /// Candidate v13 execution. The enclosing host, not this method, owns
+    /// Candidate hosted execution (v13+). The enclosing host, not this method, owns
     /// atomic commit/rollback of external effects.
     pub fn execute_hosted(
         &self,
@@ -378,10 +398,10 @@ impl Vm {
         let mut gas_used = 0;
         let result = (|| {
             let program = parse(bytes)?;
-            if program.bytecode_version() == lithovm_bytecode::SYNC_VERSION && host.is_none() {
+            if program.bytecode_version() >= lithovm_bytecode::SYNC_VERSION && host.is_none() {
                 bail!("synchronous program requires an execution host");
             }
-            if program.bytecode_version() != lithovm_bytecode::SYNC_VERSION && host.is_some() {
+            if program.bytecode_version() < lithovm_bytecode::SYNC_VERSION && host.is_some() {
                 bail!("hosted execution requires synchronous bytecode");
             }
             validate_context(context)?;
@@ -1087,6 +1107,76 @@ fn execute_block(
     for statement in statements {
         meter.charge(INSTRUCTION_GAS)?;
         match statement {
+            Statement::Create {
+                template,
+                salt,
+                initializer,
+                value,
+                arguments: inputs,
+            } => {
+                meter.charge(CONTRACT_CALL_GAS)?;
+                let context = environment
+                    .context
+                    .ok_or_else(|| anyhow!("creation requires context"))?;
+                if context.call_depth >= MAX_CALL_DEPTH {
+                    bail!("contract call depth limit reached");
+                }
+                let mut operands = Vec::with_capacity(4);
+                for expression in [template, salt, initializer, value] {
+                    meter.charge(expression_gas(expression))?;
+                    operands.push(evaluate_expression(
+                        expression,
+                        arguments,
+                        parameter_types,
+                        locals,
+                        environment,
+                        meter,
+                    )?);
+                }
+                let mut values = Vec::with_capacity(inputs.len());
+                for (_, expression) in inputs {
+                    meter.charge(expression_gas(expression))?;
+                    let value = evaluate_expression(
+                        expression,
+                        arguments,
+                        parameter_types,
+                        locals,
+                        environment,
+                        meter,
+                    )?;
+                    meter.charge(value.byte_cost())?;
+                    values.push(value.into_value());
+                }
+                values::encoded_size(&values)?;
+                let request = NativeCreation {
+                    template: operands[0].word,
+                    salt: operands[1].word,
+                    initializer: operands[2].word,
+                    value: operands[3].word,
+                    arguments: values,
+                    gas_limit: meter.limit - meter.used,
+                };
+                let host = environment
+                    .host
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("creation requires execution host"))?;
+                let returned = match host.create(request, environment.storage) {
+                    Ok(result) => {
+                        meter.charge(result.gas_used)?;
+                        result
+                    }
+                    Err(failure) => {
+                        meter.charge(failure.gas_used)?;
+                        return Err(ClassifiedFault::new(failure.kind, failure.message).into());
+                    }
+                };
+                values::encoded_size(std::slice::from_ref(&returned.value))?;
+                let Value::Word(ValueType::Address, address) = returned.value else {
+                    bail!("creation must return address");
+                };
+                environment.remaining_balance = returned.caller_balance;
+                locals.push(StackValue::scalar(ValueType::Address, address));
+            }
             Statement::Invoke {
                 return_type,
                 target,

@@ -28,15 +28,15 @@ found. Documentation and pseudocode are not counted as implementation.
 | Typed expressions and control flow | Partial: `u64` checked arithmetic/comparison/equality, typed constants/locals, `if/else`, bounded `repeat`; versions 2, 8 and 9 | v10 adds failures; v11 adds checked `u256` add/subtract and `>=` needed by token balances | Add remaining approved operations, boolean operators, function calls, approved recursion policy or explicit rejection; differential/property fuzzing and limits evidence |
 | State and storage | Partial: deterministic scalar fields, zero initialization, staged clone-and-commit | v11 adds typed single/nested maps flattened to deterministic multi-key entries with atomic rollback | Contract namespaces, persistent chain adapter, layout/version migration rules, general collections and adversarial persistence tests |
 | Events | Partial: typed schema and ordered staged records | v12 bounded dynamic fields; v13 source-order cross-frame journal and aggregate event-cap rollback/recovery tests | Consensus event commit, RPC/indexer mapping, topic/indexing rules, Makalu observation tests |
-| Contract calls | Partial: typed target/selector/value intents, balance/depth checks | v13 `invoke` adds typed arguments/results, caller resumption, ordered events/transfers, remaining-gas forwarding and full-tree rollback; legacy frames retain deferred semantics | Factory creation, approved native-to-EVM policy, persistent Lithosphere adapter, depth/DoS review and nested Makalu vectors |
+| Contract calls | Partial: typed target/selector/value intents, balance/depth checks | v13 typed synchronous calls; v14 atomic template-based creation and initializer execution; legacy frames retain deferred semantics | Approved native-to-EVM policy, persistent Lithosphere adapter, depth/DoS review and nested Makalu vectors |
 | Native transfers | Partial: balance-checked staged intents | Host conformance adapter atomically debits contracts, credits native accounts and rolls back transfers on nested failure | Consensus bank/EVM adapter, address/denom rules and Makalu success/failure tests |
 | Rollback and recovery | Partial: storage clones roll back runtime and out-of-gas errors; effects exist only in successful results | Structured VM/host failure receipts include gas; conformance tests prove full call-tree rollback and recovery | Crash/restart recovery against the persistent Lithosphere adapter and Makalu rehearsal |
-| ABI and deployment | Partial: deterministic native artifact/call ABI; CLI emits JSON/hex | v11 documented with v1-v10 compatibility; compiler emits canonical full-hash selectors and reproducible source/code metadata; host derives registrations from bytecode and adds domain-separated address derivation plus atomic value/code/initializer commit | Authenticated chain nonce, deployment gas/code limits, RPC, upgrade policy, signing/broadcast and `lithdev` implementation |
+| ABI and deployment | Partial: deterministic native artifact/call ABI; CLI emits JSON/hex | Canonical selectors/artifact hashes and atomic top-level deployment; v14 salted child creation, code-size/gas bounds and finance factory fixture tested across all 16 profiles | Approved creation identity/salt/gas policy, authenticated chain nonce, persisted creation receipts, RPC, upgrades, signing/broadcast and lithdev implementation |
 | Gas semantics | Partial: deterministic instruction/statement schedule, host-intent charges and OOG rejection | v11 adds deterministic candidate map read/write charges; VM failures report consumed gas; host forwards remaining gas and aggregates nested frames | Consensus-approved schedule, memory/event/calldata pricing, refund decision, chain integration and DoS benchmarks |
 | LEP100 token | Missing executable implementation in preview.3 | v11 compiles and executes the LAX candidate with exact initial supply, metadata getters, balances, nested allowances, transfers, approvals, delegated transfers, burn, events and negative rollback vectors | Approve the executable profile, atomic deploy/init ABI, zero-address and allowance policy, distribution input, more portable conformance vectors, chain integration and audit |
 | LEP100-15 | Missing: the standard is Draft and no account implementation or vectors exist | Failure primitives are groundwork only | Resolve normative signing/domain values; implement nonce/replay, unique signers/threshold, revocation, atomic batch, self-authorized changes, contract signatures, custody/recovery, reentrancy and portable vectors |
 | Makalu | Missing native chain integration: library runtime only; no native RPC/module identified | Unchanged | Land compiler/runtime host adapter in the L1, deterministic deploy/call RPC, real contracts, failure/recovery/upgrade/DoS tests and recorded receipts |
-| Fuzzing/security | Missing production evidence: bounded unit tests exist; no fuzz target, corpus or current toolchain security review | v10 adds decoder/compiler-runtime fuzzing; v11 adds a bounded stateful map/model target and CI job | Run and retain the new campaign, add broader execution differentials, review coverage and dependencies/SBOM, complete threat model, independent review and remediation closure |
+| Fuzzing/security | Missing production evidence: bounded unit tests exist; no fuzz target, corpus or current toolchain security review | Decoder/compiler-runtime, stateful map, synchronous call and child-creation targets; bounded execution campaigns and generated corpora retained | Longer campaigns, broader graphs/differentials, coverage/dependency/SBOM review, threat model, independent review and remediation closure |
 | Reproducible signed release | Partial: locked Rust build, pinned Actions, checksums and build provenance; archives are produced independently per hosted runner | Unchanged | Rebuild comparison or documented reproducibility level, SBOMs, malware/dependency scan, signed annotated release tag or approved keyless tag policy, installation/conformance tests |
 | litho.finance deployment UI | Missing from this repository; no production deployment interface exists to integrate | Full frontend accessed; local safety branch through `a38191c` rejects fake native success and validates Solidity receipts; 24 unit tests, typecheck, lint, production build and four isolated browser tests pass; native remains disabled | Real wallet/signing tests, reviewed native ABI, simulation/fee/network checks, status/retry UX and end-to-end Makalu evidence; no live change performed |
 | LithoScan verification/status | Missing native source-verification pipeline | Compiler artifacts and source/status schemas exist; offline `lithverify` rebuilds exact source, validates complete artifact metadata and matches independently supplied chain bytecode with negative tests | Pin reviewed compiler executable/provenance, wire trusted native RPC observations and worker resource limits, implement persisted status/finality and UI |
@@ -56,7 +56,8 @@ explicit dynamic-value deploy/call APIs alongside the scalar APIs. Dynamic
 initialization is atomic; nested failures roll back strings and value transfers;
 transaction-wide event limits are enforced. A separate v12 finance-token fixture
 adds name/symbol and passes atomic initialization/getter tests for all 16 feature
-profiles. Source literals, factories and consensus integration remain necessary.
+profiles. Source literals and consensus integration remain necessary; local
+factory creation is recorded below.
 
 ### Local synchronous-call milestone, 2026-09-26
 
@@ -65,8 +66,18 @@ calls with typed arguments and return data across compiler, VM and host. Eight
 new host tests cover ordering, nested returns, exact gas, rollback/recovery,
 invalid calls and failed initialization. The `synchronous_calls` fuzz target
 exercises executable call-tree invariants. This advances the call/effect rows;
-factory creation, EVM interoperability, persistent chain execution and production
+approved factory policy, EVM interoperability, persistent chain execution and production
 security acceptance remain open. No production row is closed by local tests.
+
+### Local child-creation milestone, 2026-09-26
+
+The [v14 candidate](LITHOVM_CREATION_V14.md) adds deterministic template-based
+child creation, mandatory initialization, byte-dependent creation gas and full
+transaction rollback. A finance factory fixture initializes fresh v12 tokens for
+all 16 profiles, preserving user metadata/supply/ownership and template state.
+Five new host tests and a 35,960-execution fuzz smoke pass. Salt/front-running
+policy, consensus pricing/receipts, persisted execution, security review and
+Makalu acceptance remain open. See [dated evidence](CREATION_CANDIDATE_EVIDENCE_2026_09_26.md).
 
 ### Closure sequence
 

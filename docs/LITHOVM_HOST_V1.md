@@ -45,6 +45,10 @@ failure in a child or resumed caller discards the complete transaction. See
 [v13 semantics, compatibility and limits](LITHOVM_SYNCHRONOUS_V13.md).
 The deferred behavior below continues to apply to legacy frames.
 
+The [v14 child-creation candidate](LITHOVM_CREATION_V14.md) extends this same
+adapter with atomic template-based code registration and initialization. Parent,
+new child, transfers and events still share one commit/rollback decision.
+
 ### Dynamic values (local v12 candidate)
 
 `deploy_values(DeployRequest<Value>)` and `execute_values(CallRequest<Value>)`

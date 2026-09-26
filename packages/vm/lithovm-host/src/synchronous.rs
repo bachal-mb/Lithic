@@ -1,5 +1,7 @@
 use super::*;
-use lithovm::{ExecutionHost, InvocationResult, NativeInvocation, NativeTransfer, ValueCall};
+use lithovm::{
+    ExecutionHost, InvocationResult, NativeCreation, NativeInvocation, NativeTransfer, ValueCall,
+};
 
 pub(super) fn execute<T: StateTransaction>(
     vm: &Vm,
@@ -70,6 +72,121 @@ struct Adapter<'a, T> {
 }
 
 impl<T: StateTransaction> Adapter<'_, T> {
+    fn create_inner(
+        &mut self,
+        request: NativeCreation,
+        storage: &Storage,
+    ) -> Result<InvocationResult, HostFailure> {
+        let template = load_contract(self.state, request.template, 0)?;
+        if template.bytecode.len() > MAX_CHILD_CODE_BYTES {
+            return Err(HostFailure {
+                kind: HostFailureKind::InvalidBytecode,
+                message: "child code exceeds creation limit".into(),
+                gas_used: 0,
+                failed_contract: request.template,
+            });
+        }
+        let creation_gas = CHILD_CREATE_BASE_GAS + template.bytecode.len() as u64;
+        if creation_gas > request.gas_limit {
+            return Err(HostFailure {
+                kind: HostFailureKind::Vm(FailureKind::OutOfGas),
+                message: "out of gas creating child code".into(),
+                gas_used: request.gas_limit,
+                failed_contract: self.address,
+            });
+        }
+        let address = child_contract_address(
+            self.address,
+            request.salt,
+            template.code_hash,
+            self.context.chain_id,
+        );
+        // Everything after this point, including validation failures, pays for code.
+        let created = (|| {
+            if self
+                .state
+                .load_contract(&address)
+                .map_err(|e| state_failure(e, 0, address))?
+                .is_some()
+            {
+                return Err(HostFailure {
+                    kind: HostFailureKind::ContractExists,
+                    message: "derived child address is already deployed".into(),
+                    gas_used: 0,
+                    failed_contract: address,
+                });
+            }
+            let program = parse(&template.bytecode).map_err(|e| HostFailure {
+                kind: HostFailureKind::InvalidBytecode,
+                message: e.to_string(),
+                gas_used: 0,
+                failed_contract: request.template,
+            })?;
+            let mut entrypoints = BTreeMap::new();
+            for function in &program.functions {
+                if entrypoints
+                    .insert(function_selector(function), function.name.clone())
+                    .is_some()
+                {
+                    return Err(HostFailure {
+                        kind: HostFailureKind::InvalidEntrypoint,
+                        message: "canonical function selector collision".into(),
+                        gas_used: 0,
+                        failed_contract: address,
+                    });
+                }
+            }
+            // The template is code only. Never copy its storage or native balance.
+            store_contract(
+                self.state,
+                address,
+                DeployedContract {
+                    bytecode: template.bytecode,
+                    code_hash: template.code_hash,
+                    storage: Storage::default(),
+                    entrypoints,
+                },
+                0,
+            )?;
+            let result = self.invoke_inner(
+                NativeInvocation {
+                    target: address,
+                    selector: request.initializer,
+                    value: request.value,
+                    arguments: request.arguments,
+                    return_type: lithovm_bytecode::ValueType::Bool,
+                    gas_limit: request.gas_limit - creation_gas,
+                },
+                storage,
+            )?;
+            let mut yes = [0; 32];
+            yes[31] = 1;
+            if result.value != Value::Word(lithovm_bytecode::ValueType::Bool, yes) {
+                return Err(HostFailure {
+                    kind: HostFailureKind::Vm(FailureKind::Revert),
+                    message: "child initializer did not return true".into(),
+                    gas_used: result.gas_used,
+                    failed_contract: address,
+                });
+            }
+            Ok(InvocationResult {
+                value: Value::Word(lithovm_bytecode::ValueType::Address, address),
+                gas_used: result.gas_used,
+                caller_balance: result.caller_balance,
+            })
+        })();
+        match created {
+            Ok(mut result) => {
+                result.gas_used += creation_gas;
+                Ok(result)
+            }
+            Err(mut failure) => {
+                failure.gas_used += creation_gas;
+                Err(failure)
+            }
+        }
+    }
+
     fn remember(&mut self, failure: HostFailure) -> ExecutionFailure {
         let vm_failure = ExecutionFailure {
             kind: match failure.kind {
@@ -172,6 +289,14 @@ impl<T: StateTransaction> Adapter<'_, T> {
 }
 
 impl<T: StateTransaction> ExecutionHost for Adapter<'_, T> {
+    fn create(
+        &mut self,
+        request: NativeCreation,
+        storage: &Storage,
+    ) -> Result<InvocationResult, ExecutionFailure> {
+        self.create_inner(request, storage)
+            .map_err(|failure| self.remember(failure))
+    }
     fn emit(&mut self, event: &EventRecord<Value>) -> Result<(), ExecutionFailure> {
         let size = 7 + event
             .fields

@@ -53,7 +53,9 @@ Status: context, events, staged native transfers and outbound call intents imple
 - balance-checked staged outbound call intents and a depth limit implemented;
 - local [v13 synchronous calls](LITHOVM_SYNCHRONOUS_V13.md) now carry typed
   arguments/results, preserve effect ordering and reject reentrancy with full-tree
-  rollback; factory creation, persistent chain integration and policy approval remain;
+  rollback; local [v14 creation](LITHOVM_CREATION_V14.md) adds atomic child
+  initialization and a finance-factory fixture. Persistent chain integration,
+  creation receipts, salt/gas policy approval and security acceptance remain;
 - context opcodes use the current versioned instruction gas schedule; host-call gas remains;
 - deterministic receipts and observable failure semantics.
 - atomic host deployment derives selectors from validated bytecode and commits

@@ -525,35 +525,52 @@ impl BodyParser<'_> {
         self.skip_whitespace();
         self.expect_byte(b'=', "expected '=' in local binding")?;
         self.skip_whitespace();
-        if self.consume_keyword("invoke") {
+        let creation = self.consume_keyword("create_contract");
+        if creation || self.consume_keyword("invoke") {
             if mutable {
-                return Err("invoke result bindings must be immutable".into());
+                return Err("host result bindings must be immutable".into());
             }
-            let return_type = annotated_type.ok_or("invoke requires an explicit return type")?;
+            let return_type =
+                annotated_type.ok_or("host result requires an explicit return type")?;
+            if creation && return_type != ValueType::Address {
+                return Err("create_contract result must be address".into());
+            }
             self.skip_whitespace();
-            self.expect_byte(b'(', "expected '(' after invoke")?;
+            self.expect_byte(b'(', "expected '(' after host operation")?;
             let source = self.take_expression_until(b')')?.to_owned();
             self.skip_whitespace();
-            self.expect_byte(b';', "expected ';' after invoke")?;
+            self.expect_byte(b';', "expected ';' after host operation")?;
             let parts = source.split(',').collect::<Vec<_>>();
-            if parts.len() < 3 || parts.len() > 67 {
+            let operand_types = if creation {
+                vec![
+                    ValueType::Address,
+                    ValueType::Bytes32,
+                    ValueType::Bytes32,
+                    ValueType::U256,
+                ]
+            } else {
+                vec![ValueType::Address, ValueType::Bytes32, ValueType::U256]
+            };
+            if parts.len() < operand_types.len() || parts.len() > operand_types.len() + 64 {
                 return Err(
-                    "invoke requires target, selector, value and at most 64 arguments".into(),
+                    "host operation requires its fixed operands and at most 64 arguments".into(),
                 );
             }
             let mut expressions = parts
                 .iter()
                 .map(|part| self.compile_expression(part))
                 .collect::<Result<Vec<_>, _>>()?;
-            for (index, ty) in [ValueType::Address, ValueType::Bytes32, ValueType::U256]
-                .into_iter()
-                .enumerate()
-            {
+            for (index, ty) in operand_types.into_iter().enumerate() {
                 coerce_expression(&mut expressions[index], ty)?;
             }
             let mut expressions = expressions.into_iter();
             let target = expressions.next().unwrap().0;
             let selector = expressions.next().unwrap().0;
+            let initializer = if creation {
+                Some(expressions.next().unwrap().0)
+            } else {
+                None
+            };
             let value = expressions.next().unwrap().0;
             let arguments = expressions
                 .map(|(expression, ty)| (ty, expression))
@@ -564,6 +581,15 @@ impl BodyParser<'_> {
             self.local_names.push(name);
             self.local_types.push(return_type);
             self.local_mutability.push(false);
+            if let Some(initializer) = initializer {
+                return Ok(Statement::Create {
+                    template: target,
+                    salt: selector,
+                    initializer,
+                    value,
+                    arguments,
+                });
+            }
             return Ok(Statement::Invoke {
                 return_type,
                 target,

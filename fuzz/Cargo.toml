@@ -45,3 +45,10 @@ path = "fuzz_targets/synchronous_calls.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "child_creation"
+path = "fuzz_targets/child_creation.rs"
+test = false
+doc = false
+bench = false

@@ -17,6 +17,7 @@ pub const VERSION: u8 = 11;
 /// Dynamic-value candidate; scalar programs continue to encode as v11.
 pub const STRING_VERSION: u8 = 12;
 pub const SYNC_VERSION: u8 = 13;
+pub const CREATE_VERSION: u8 = 14;
 pub const MAX_FUNCTIONS: usize = 1024;
 pub const MAX_PARAMETERS: usize = 64;
 pub const MAX_NAME_BYTES: usize = 255;
@@ -73,6 +74,13 @@ pub enum ReturnValue {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Statement {
+    Create {
+        template: Vec<Instruction>,
+        salt: Vec<Instruction>,
+        initializer: Vec<Instruction>,
+        value: Vec<Instruction>,
+        arguments: Vec<(ValueType, Vec<Instruction>)>,
+    },
     Invoke {
         return_type: ValueType,
         target: Vec<Instruction>,
@@ -213,6 +221,12 @@ impl Program {
     pub fn bytecode_version(&self) -> u8 {
         if self.functions.iter().any(|f| {
             matches!(&f.return_value,
+            ReturnValue::Statements(body) if contains_creation(body))
+        }) {
+            return CREATE_VERSION;
+        }
+        if self.functions.iter().any(|f| {
+            matches!(&f.return_value,
             ReturnValue::Statements(body) if contains_statement(body, true))
         }) {
             return SYNC_VERSION;
@@ -303,7 +317,7 @@ pub fn parse(bytes: &[u8]) -> Result<Program> {
         bail!("invalid LithoVM bytecode magic");
     }
     let version = reader.byte()?;
-    if !(LEGACY_VERSION..=SYNC_VERSION).contains(&version) {
+    if !(LEGACY_VERSION..=CREATE_VERSION).contains(&version) {
         bail!("unsupported LithoVM bytecode version {version}");
     }
     let storage = if version >= STORAGE_VERSION {
@@ -492,10 +506,23 @@ fn contains_statement(body: &[Statement], invoke: bool) -> bool {
     })
 }
 
+fn contains_creation(body: &[Statement]) -> bool {
+    body.iter().any(|statement| match statement {
+        Statement::Create { .. } => true,
+        Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => contains_creation(then_branch) || contains_creation(else_branch),
+        Statement::Repeat { body, .. } => contains_creation(body),
+        _ => false,
+    })
+}
+
 fn validate_call_mode(program: &Program) -> Result<()> {
-    if program.bytecode_version() == SYNC_VERSION && program.functions.iter().any(|f|
+    if program.bytecode_version() >= SYNC_VERSION && program.functions.iter().any(|f|
         matches!(&f.return_value, ReturnValue::Statements(body) if contains_statement(body, false))) {
-        bail!("cannot mix synchronous invoke and deferred call_contract in one program");
+        bail!("cannot mix synchronous effects and deferred call_contract in one program");
     }
     Ok(())
 }
@@ -676,6 +703,23 @@ fn encode_statements(bytes: &mut Vec<u8>, statements: &[Statement]) -> Result<()
     push_u16(bytes, statements.len())?;
     for statement in statements {
         match statement {
+            Statement::Create {
+                template,
+                salt,
+                initializer,
+                value,
+                arguments,
+            } => {
+                bytes.push(15);
+                for expression in [template, salt, initializer, value] {
+                    encode_expression(bytes, expression)?;
+                }
+                push_u16(bytes, arguments.len())?;
+                for (ty, expression) in arguments {
+                    bytes.push(*ty as u8);
+                    encode_expression(bytes, expression)?;
+                }
+            }
             Statement::Invoke {
                 return_type,
                 target,
@@ -879,6 +923,30 @@ fn decode_statements(reader: &mut Reader<'_>, version: u8, depth: usize) -> Resu
     let mut statements = Vec::with_capacity(statement_count);
     for _ in 0..statement_count {
         statements.push(match reader.byte()? {
+            15 if version >= CREATE_VERSION => {
+                let template = decode_expression(reader, version)?;
+                let salt = decode_expression(reader, version)?;
+                let initializer = decode_expression(reader, version)?;
+                let value = decode_expression(reader, version)?;
+                let count = reader.u16()? as usize;
+                if count > MAX_PARAMETERS {
+                    bail!("too many creation arguments");
+                }
+                let mut arguments = Vec::with_capacity(count);
+                for _ in 0..count {
+                    arguments.push((
+                        ValueType::from_byte(reader.byte()?)?,
+                        decode_expression(reader, version)?,
+                    ));
+                }
+                Statement::Create {
+                    template,
+                    salt,
+                    initializer,
+                    value,
+                    arguments,
+                }
+            }
             14 if version >= SYNC_VERSION => {
                 let return_type = ValueType::from_byte(reader.byte()?)?;
                 let target = decode_expression(reader, version)?;
@@ -1089,6 +1157,33 @@ fn validate_statements(
             bail!("unreachable statement after terminal return or branch");
         }
         match statement {
+            Statement::Create {
+                template,
+                salt,
+                initializer,
+                value,
+                arguments,
+            } => {
+                for (expression, ty) in [
+                    (template, ValueType::Address),
+                    (salt, ValueType::Bytes32),
+                    (initializer, ValueType::Bytes32),
+                    (value, ValueType::U256),
+                ] {
+                    validate_expression(expression, parameters, &locals, schema, ty)?;
+                }
+                if arguments.len() > MAX_PARAMETERS {
+                    bail!("too many creation arguments");
+                }
+                for (ty, expression) in arguments {
+                    validate_expression(expression, parameters, &locals, schema, *ty)?;
+                }
+                if locals.len() >= MAX_LOCALS {
+                    bail!("too many local bindings");
+                }
+                locals.push(ValueType::Address);
+                mutable.push(false);
+            }
             Statement::Invoke {
                 return_type,
                 target,
@@ -1399,7 +1494,7 @@ mod tests {
         trailing.push(0);
         assert!(parse(&trailing).is_err());
         let mut version = bytes;
-        version[MAGIC.len()] = SYNC_VERSION + 1;
+        version[MAGIC.len()] = CREATE_VERSION + 1;
         assert!(parse(&version).is_err());
     }
 
