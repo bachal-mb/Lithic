@@ -5,7 +5,6 @@ package nativechain
 import (
 	storetypes "cosmossdk.io/store/types"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"github.com/cosmos/cosmos-sdk/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -129,29 +128,70 @@ func TestEphemeralEVMPrecompileCallAndOuterRevert(t *testing.T) {
 		BlockNumber: big.NewInt(11), Time: big.NewInt(22),
 	}, vm.TxContext{Origin: common.HexToAddress("0xdead")}, db, params.AllEthashProtocolChanges, vm.Config{})
 	RegisterLabPrecompile(evm, key, Environment{ChainID: 700777, Nonce: 1})
-	request := request(t)
-	request.Caller = "0xdead" // The EVM frame, not this field, authenticates the caller.
-	request.BlockHeight = 999
-	request.BlockTimestamp = 999
-	payload, err := json.Marshal(request)
+	precompile, ok := evm.Precompile(LabAddress)
+	if !ok || precompile.RequiredGas([]byte{1, 2, 3}) != 512 {
+		t.Fatal("gateway decode gas not prepaid")
+	}
+	code, err := hex.DecodeString(strings.TrimPrefix(fixture(t, "testdata/counter.lithic"), "0x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := crypto.Keccak256Hash([]byte("initialize(u64)"))
+	arguments, err := hex.DecodeString(strings.TrimPrefix(args(7), "0x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := EncodeGatewayDeploy(code, selector, arguments)
 	if err != nil {
 		t.Fatal(err)
 	}
 	caller := vm.AccountRef(common.HexToAddress("0x0000000000000000000000000000000000000009"))
+	if _, left, err := evm.Call(caller, LabAddress, []byte{1, 2, 3, 4}, 1000, big.NewInt(0)); err == nil || left != 0 {
+		t.Fatalf("malformed gateway input did not consume gas: %v %d", err, left)
+	}
 	outer := db.Snapshot()
 	output, left, err := evm.Call(caller, LabAddress, payload, 1000000, big.NewInt(0))
 	if err != nil || left >= 1000000 {
 		t.Fatalf("EVM precompile call: %v gas=%d", err, left)
 	}
-	var result Response
-	if err := json.Unmarshal(output, &result); err != nil || !result.Success {
-		t.Fatalf("EVM result: %v %+v", err, result)
+	nativeResult, err := DecodeGatewayResult(output)
+	if err != nil {
+		t.Fatal(err)
 	}
+	result := Response{Success: true, Result: "0x" + hex.EncodeToString(nativeResult)}
 	address := returnedAddress(t, result)
 	stateKey := []byte("lithovm/v1/contracts/" + strings.TrimPrefix(address, "0x"))
 	cache, _ := db.GetCacheContext()
 	if !cache.KVStore(key).Has(stateKey) || len(db.Logs()) != 1 {
 		t.Fatal("EVM call did not stage native state and log")
+	}
+	if !strings.Contains(string(db.Logs()[0].Data), "0000000000000000000000000000000000000009") {
+		t.Fatal("native deployer was not the immediate EVM caller")
+	}
+	getSelector := crypto.Keccak256Hash([]byte("get()"))
+	getArguments, err := hex.DecodeString(strings.TrimPrefix(args(), "0x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	getPayload, err := EncodeGatewayCall(common.HexToAddress(address), getSelector, getArguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownSelector := crypto.Keccak256Hash([]byte("missing()"))
+	unknownPayload, err := EncodeGatewayCall(common.HexToAddress(address), unknownSelector, getArguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, left, err := evm.Call(caller, LabAddress, unknownPayload, 1000000, big.NewInt(0)); err != vm.ErrExecutionReverted || left == 0 {
+		t.Fatalf("unknown native selector failure gas: %v %d", err, left)
+	}
+	getOutput, _, err := evm.Call(caller, LabAddress, getPayload, 1000000, big.NewInt(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	getResult, err := DecodeGatewayResult(getOutput)
+	if err != nil || !strings.HasSuffix(hex.EncodeToString(getResult), "0007") {
+		t.Fatalf("native gateway call: %v %x", err, getResult)
 	}
 	db.RevertToSnapshot(outer)
 	cache, _ = db.GetCacheContext()

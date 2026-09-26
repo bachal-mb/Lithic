@@ -3,7 +3,6 @@
 package nativechain
 
 import (
-	"encoding/json"
 	"errors"
 
 	storetypes "cosmossdk.io/store/types"
@@ -12,8 +11,8 @@ import (
 	"github.com/evmos/evmos/v20/x/evm/statedb"
 )
 
-// LabPrecompile is deliberately registered only by tests. Its JSON envelope,
-// nonce and chain ID are not a production transaction ABI or consensus rule.
+// LabPrecompile is deliberately registered only by tests. Its nonce, chain ID,
+// gas pricing and receipt log are not approved consensus rules.
 type LabPrecompile struct {
 	Key         storetypes.StoreKey
 	Environment Environment
@@ -23,9 +22,11 @@ var _ vm.PrecompiledContract = LabPrecompile{}
 
 func (LabPrecompile) Address() common.Address { return LabAddress }
 
-// The experimental dynamic charge is applied by ExecuteFrame, including copy
-// costs. Production requires a reviewed gas schedule before registration.
-func (LabPrecompile) RequiredGas([]byte) uint64 { return 0 }
+// Decode work is prepaid even for malformed input. ExecuteFrame separately
+// charges native execution and state/log copy. This is not an approved schedule.
+func (LabPrecompile) RequiredGas(input []byte) uint64 {
+	return 500 + 4*uint64(len(input))
+}
 
 func (p LabPrecompile) Run(evm *vm.EVM, frame *vm.Contract, readOnly bool) ([]byte, error) {
 	db, ok := evm.StateDB.(*statedb.StateDB)
@@ -33,8 +34,8 @@ func (p LabPrecompile) Run(evm *vm.EVM, frame *vm.Contract, readOnly bool) ([]by
 		!evm.Context.BlockNumber.IsUint64() || !evm.Context.Time.IsUint64() {
 		return nil, errors.New("unsupported lab EVM context")
 	}
-	var request Request
-	if len(frame.Input) > MaxBytes || json.Unmarshal(frame.Input, &request) != nil {
+	request, err := DecodeGatewayInput(frame.Input)
+	if err != nil {
 		return nil, errors.New("invalid lab payload")
 	}
 	env := p.Environment
@@ -44,7 +45,7 @@ func (p LabPrecompile) Run(evm *vm.EVM, frame *vm.Contract, readOnly bool) ([]by
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(response)
+	return EncodeGatewayResult(response.Result)
 }
 
 // RegisterLabPrecompile modifies only the supplied ephemeral EVM instance.

@@ -31,8 +31,8 @@ found. Documentation and pseudocode are not counted as implementation.
 | Contract calls | Partial: typed target/selector/value intents, balance/depth checks | v13 typed synchronous calls; v14 atomic template-based creation and initializer execution; legacy frames retain deferred semantics | Approved native-to-EVM policy, persistent Lithosphere adapter, depth/DoS review and nested Makalu vectors |
 | Native transfers | Partial: balance-checked staged intents | Host conformance adapter atomically debits contracts, credits native accounts and rolls back transfers on nested failure | Consensus bank/EVM adapter, address/denom rules and Makalu success/failure tests |
 | Rollback and recovery | Partial: storage clones roll back runtime and out-of-gas errors; effects exist only in successful results | Structured failures plus isolated pinned-source Evmos StateDB tests: parent revert removes native state/logs; retry persists and reloads | Full transaction/restart recovery against the approved Lithosphere app and Makalu rehearsal |
-| ABI and deployment | Partial: deterministic native artifact/call ABI; CLI emits JSON/hex | Canonical selectors/artifact hashes and atomic top-level deployment; v14 salted child creation, code-size/gas bounds and finance factory fixture tested across all 16 profiles | Approved creation identity/salt/gas policy, authenticated chain nonce, persisted creation receipts, RPC, upgrades, signing/broadcast and lithdev implementation |
-| Gas semantics | Partial: deterministic instruction/statement schedule, host-intent charges and OOG rejection | v11 adds deterministic candidate map read/write charges; VM failures report consumed gas; host forwards remaining gas and aggregates nested frames | Consensus-approved schedule, memory/event/calldata pricing, refund decision, chain integration and DoS benchmarks |
+| ABI and deployment | Partial: deterministic native artifact/call ABI; CLI emits JSON/hex | Canonical selectors/artifact hashes and atomic top-level deployment; v14 salted child creation; first EVM gateway ABI candidate passes strict encode/decode and EVM.Call tests | Reviewed salt reservation/collision, authenticated chain nonce, consensus ABI/gas, persisted receipts, RPC, upgrades, signing/broadcast and lithdev implementation |
+| Gas semantics | Partial: deterministic instruction/statement schedule, host-intent charges and OOG rejection | VM failures report consumed gas; test-only gateway prepays bounded ABI decode and charges native/read/write/log work | Consensus-approved schedule, memory/event/calldata pricing, failure/refund decision, chain integration and DoS benchmarks |
 | LEP100 token | Missing executable implementation in preview.3 | v11 compiles and executes the LAX candidate with exact initial supply, metadata getters, balances, nested allowances, transfers, approvals, delegated transfers, burn, events and negative rollback vectors | Approve the executable profile, atomic deploy/init ABI, zero-address and allowance policy, distribution input, more portable conformance vectors, chain integration and audit |
 | LEP100-15 | Missing: the standard is Draft and no account implementation or vectors exist | Failure primitives are groundwork only | Resolve normative signing/domain values; implement nonce/replay, unique signers/threshold, revocation, atomic batch, self-authorized changes, contract signatures, custody/recovery, reentrancy and portable vectors |
 | Makalu | Missing native chain integration: library runtime only; no native RPC/module identified | Isolated pinned Evmos/SDK lab executes Rust LithoVM via Go FFI, real StateDB journal and an ephemeral test-only EVM precompile; no app registration or network transaction | Approved consensus route/ABI/gas/identity, chain app integration, authenticated deployment/call RPC, real Makalu contracts and failure/recovery/upgrade/DoS receipts |
@@ -48,10 +48,11 @@ found. Documentation and pseudocode are not counted as implementation.
 
 Host-generated deployment records and the local included-status handoff are
 implemented; see [receipt evidence and remaining integration](LITHOSCAN_NATIVE_RECEIPTS_V1.md).
-The next production-facing chain interface needs owner confirmation of gateway
-route, salt-versus-counter creation identity and fail-whole-transaction versus
-catchable-frame semantics. The old integration proposal and new candidate differ
-on the latter two; see [the concrete review request](NATIVE_CHAIN_INTEGRATION_REVIEW.md).
+The client confirmed EVM gateway, salted child identity and fail-whole native
+transaction semantics for the first profile on 2026-09-26. The resulting
+[strict gateway ABI candidate](NATIVE_GATEWAY_CANDIDATE_V1.md) is still local.
+Consensus gas/ABI, salt reservation, receipt and upgrade review must precede
+app registration, RPC or Makalu activation.
 LEP100-15 also still needs the previously identified normative signing values.
 This does not imply other engineering, Makalu tests, audit or releases are complete.
 

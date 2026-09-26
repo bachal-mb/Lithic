@@ -1,6 +1,7 @@
 # Native chain integration proposal for owner review
 
-Status: technically reviewed recommendation, not consensus approval or activation authorization.
+Status: first-profile choices confirmed by client on 2026-09-26; not consensus
+gas/ABI approval or activation authorization.
 
 ## Review outcome (2026-09-26)
 
@@ -11,24 +12,26 @@ v14 atomic child creation, with a finance-factory fixture and host-generated
 [deployment records](LITHOSCAN_NATIVE_RECEIPTS_V1.md). These supersede the older
 implementation-gap statements below, not the chain integration requirements.
 
-Before fixing the production-facing keeper/gateway interface, the chain owner
-must resolve two mismatches between this proposal and the candidate:
+The client confirmed EVM-gateway-first, salted child identity and
+fail-whole-native-transaction behavior on 2026-09-26. These resolve the two
+profile mismatches between this proposal and the candidate:
 
-- Creation identity: this proposal called for per-creator counters; v14 currently
-  uses a factory-scoped salt and code hash. Confirm salted identity plus the public
-  factory's anti-front-running/reservation policy, or require counter-based identity.
-- Failure semantics: this proposal's acceptance table includes a caught child
-  failure; v13/v14 deliberately abort the entire native transaction. Confirm this
-  fail-whole-transaction profile for the first gateway, or require catchable frames.
+- Creation identity: v14 uses a factory-scoped salt and code hash. Salted
+  identity is the chosen first profile; public factory anti-front-running and
+  reservation policy still needs security review.
+- Failure semantics: v13/v14 abort the entire native transaction on child
+  failure. Catchable frames are outside this first profile.
 
-Also confirm EVM-gateway-first as the route to implement for the production
-integration. The recommended first harness remains nonpayable, with no native-to-EVM
+The first [ABI candidate](NATIVE_GATEWAY_CANDIDATE_V1.md) is now exercised
+through an ephemeral EVM registry. The recommended first harness remains
+nonpayable, with no native-to-EVM
 callbacks, no live registration, and no claim of ordinary ERC-20 compatibility.
-These are chain-owner decisions, not new requests for Amir's frontend repository.
-Local experiments remain possible; they do not freeze interoperable consensus
-semantics or authorize activation. The isolated, test-only StateDB/EVM harness
+These are not new requests for Amir's frontend repository. Local experiments
+do not freeze interoperable consensus gas/ABI semantics or authorize activation.
+The isolated, test-only StateDB/EVM harness
 is [documented separately](NATIVE_CHAIN_LAB_EVIDENCE_2026_09_26.md); do not
-register it in the chain app or expose a frontend/RPC path before the decision.
+register it in the chain app or expose a frontend/RPC path before the remaining
+gas, address-collision, receipt and upgrade rules are reviewed.
 
 Recommend an EVM precompile gateway over a shared native keeper/execution
 core for the first Litho Finance integration. This supersedes the earlier
@@ -93,10 +96,11 @@ security correctness.
    exactly once across EVM/bank/native balances, preserve prefunding, reject
    overflow and retain patched module-account protections. Never expose the
    conformance adapter's arbitrary balance setters as bank authority.
-5. EVM transaction nonce is insufficient for multiple native creations in one
-   transaction. Define a journalled per-native-creator counter, versioned
-   address derivation and chain domain. Check native/EVM code and reserved
-   precompile/module identities. Specify failed-creation counter behavior.
+5. The confirmed child-creation profile uses a creator-scoped salt and code
+   hash, not a counter. Specify salt reservation/front-running and collision
+   checks against native/EVM code and reserved precompile/module identities.
+   Top-level gateway deployment still needs an authenticated nonce handoff and
+   a rule for repeated same-code deployments in one EVM transaction.
 6. Wrap native payload bytes in a Solidity gateway ABI; retain full bytes32
    native selectors inside the payload, distinct from EVM four-byte selectors.
    Specify log topics/data and emitter identity. Frontend validation must use
@@ -135,7 +139,7 @@ security correctness.
 | --- | --- |
 | Native creation succeeds, outer EVM reverts or runs out of gas | No native code/storage/log/balance/counter effects survive; normal transaction fee/nonce effects follow chain rules |
 | Failed child under first fail-whole profile | Entire native transaction rolls back with deterministic remaining gas; catchable frames require separate approval |
-| Two successful creates in one transaction | Distinct addresses; correct creator and counter |
+| Two successful salted child creates in one transaction | Distinct addresses; correct creator and salt |
 | Spoofed creator, wrapper, delegate and static call modes | No tx.origin escalation; correct caller and write restrictions |
 | Prefunding, balance overflow, reserved/code collisions | Preserve funds and reject invalid creation atomically |
 | Malformed payload, oversized strings/events, FFI failure | Bounded deterministic failure without process crash or partial state |

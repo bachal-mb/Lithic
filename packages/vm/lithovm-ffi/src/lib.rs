@@ -30,6 +30,7 @@ struct Request {
     contract: Option<String>,
     bytecode: Option<String>,
     function: Option<String>,
+    selector: Option<String>,
     arguments: String,
     nonce: u64,
     gas_limit: u64,
@@ -63,6 +64,33 @@ fn address(s: &str) -> Result<Address, String> {
 }
 fn key(address: &Address) -> String {
     format!("lithovm/v1/contracts/{}", hex::encode(&address[12..]))
+}
+
+fn selected_function(
+    function: Option<String>,
+    selector: Option<String>,
+    entrypoints: impl IntoIterator<Item = ([u8; 32], String)>,
+) -> Result<Option<String>, String> {
+    match (function, selector) {
+        (Some(name), None) => Ok(Some(name)),
+        (None, None) => Ok(None),
+        (None, Some(selector)) => {
+            let bytes = decode(&selector)?;
+            if bytes.len() != 32 {
+                return Err("native selector must be 32 bytes".into());
+            }
+            if bytes.iter().all(|byte| *byte == 0) {
+                return Ok(None);
+            }
+            let name = entrypoints
+                .into_iter()
+                .find(|(candidate, _)| candidate.as_slice() == bytes.as_slice())
+                .map(|(_, name)| name)
+                .ok_or("unknown native selector")?;
+            Ok(Some(name))
+        }
+        (Some(_), Some(_)) => Err("function and selector are mutually exclusive".into()),
+    }
 }
 
 struct CallbackState {
@@ -214,6 +242,15 @@ impl StateTransaction for Transaction<'_> {
 fn failure(f: HostFailure) -> Json {
     json!({"success": false, "gasUsed": f.gas_used.to_string(), "kind": format!("{:?}", f.kind), "message": f.message, "writes": [], "deployments": [], "events": []})
 }
+fn rejected(kind: HostFailureKind, message: String, contract: Address) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(&failure(HostFailure {
+        kind,
+        message,
+        gas_used: 0,
+        failed_contract: contract,
+    }))
+    .map_err(|e| e.to_string())
+}
 fn execute(input: &[u8], read: ReadFn, context: usize) -> Result<Vec<u8>, String> {
     let request: Request = serde_json::from_slice(input).map_err(|e| e.to_string())?;
     if request.version != 1 || request.chain_id == 0 || request.gas_limit > 10_000_000 {
@@ -237,14 +274,40 @@ fn execute(input: &[u8], read: ReadFn, context: usize) -> Result<Vec<u8>, String
             if bytecode.len() > MAX_CHILD_CODE_BYTES {
                 return Err("code exceeds harness limit".into());
             }
-            if request.function.is_none() && !arguments.is_empty() {
+            let entrypoints = if request.selector.is_some() {
+                let program = match parse(&bytecode) {
+                    Ok(program) => program,
+                    Err(error) => {
+                        return rejected(
+                            HostFailureKind::InvalidBytecode,
+                            error.to_string(),
+                            caller,
+                        )
+                    }
+                };
+                program
+                    .functions
+                    .iter()
+                    .map(|f| (function_selector(f), f.name.clone()))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let initializer =
+                match selected_function(request.function, request.selector, entrypoints) {
+                    Ok(function) => function,
+                    Err(message) => {
+                        return rejected(HostFailureKind::InvalidEntrypoint, message, caller)
+                    }
+                };
+            if initializer.is_none() && !arguments.is_empty() {
                 return Err("arguments require initializer".into());
             }
             match host.deploy_values(DeployRequest {
                 deployer: caller,
                 nonce: request.nonce,
                 bytecode,
-                initializer: request.function.map(|function| Initializer {
+                initializer: initializer.map(|function| Initializer {
                     function,
                     arguments,
                 }),
@@ -269,9 +332,40 @@ fn execute(input: &[u8], read: ReadFn, context: usize) -> Result<Vec<u8>, String
             if request.bytecode.is_some() {
                 return Err("unexpected bytecode in call".into());
             }
+            let contract = address(&request.contract.ok_or("missing contract")?)?;
+            let entrypoints = if request.selector.is_some() {
+                let transaction = host.state_mut().begin_transaction()?;
+                match transaction.load_contract(&contract) {
+                    Ok(Some(deployed)) => deployed.entrypoints,
+                    Ok(None) => {
+                        return rejected(
+                            HostFailureKind::MissingContract,
+                            "missing contract".into(),
+                            contract,
+                        )
+                    }
+                    Err(message) => return rejected(HostFailureKind::State, message, contract),
+                }
+            } else {
+                BTreeMap::new()
+            };
+            let function = match selected_function(request.function, request.selector, entrypoints)
+            {
+                Ok(Some(function)) => function,
+                Ok(None) => {
+                    return rejected(
+                        HostFailureKind::UnknownSelector,
+                        "call requires a native selector".into(),
+                        contract,
+                    )
+                }
+                Err(message) => {
+                    return rejected(HostFailureKind::UnknownSelector, message, contract)
+                }
+            };
             match host.execute_values(CallRequest {
-                contract: address(&request.contract.ok_or("missing contract")?)?,
-                function: request.function.ok_or("missing function")?,
+                contract,
+                function,
                 arguments,
                 caller,
                 value: [0; 32],

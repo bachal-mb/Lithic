@@ -32,6 +32,7 @@ type Request struct {
 	Contract       *string `json:"contract,omitempty"`
 	Bytecode       *string `json:"bytecode,omitempty"`
 	Function       *string `json:"function,omitempty"`
+	Selector       *string `json:"selector,omitempty"`
 	Arguments      string  `json:"arguments"`
 	Nonce          uint64  `json:"nonce"`
 	GasLimit       uint64  `json:"gas_limit"`

@@ -29,8 +29,10 @@ or currently running network match the lab.
 - A native factory creates and initializes a child atomically. Failure leaves
   no child batch; outer revert removes successful child effects and logs.
 - The `lithovm_chain_lab` build tag supplies an ephemeral `EVM.Call` precompile
-  registry test. The request's caller and block fields are overwritten from
-  the EVM frame/context. This registry is not installed in the chain app.
+  registry test. Its [canonical EVM ABI](NATIVE_GATEWAY_CANDIDATE_V1.md) now
+  carries full native selectors and rejects trailing/aliased payloads. The
+  request's caller and block fields are overwritten from the EVM frame/context.
+  This registry is not installed in the chain app.
 
 ## Verification commands
 
@@ -54,12 +56,14 @@ artifact or production installation recipe.
 
 ## Unclosed production controls
 
-The JSON envelope, nonce/chain-ID source, zero static precompile gas,
-experimental dynamic copy pricing, event topic, native state namespace and
-salting are provisional. Malformed-payload decoding is not fully metered.
+The internal FFI JSON request, nonce/chain-ID source, provisional ABI precharge
+and dynamic copy pricing, event topic and native state namespace are not
+consensus-approved. Malformed-payload decoding now has an experimental static
+precharge; complete gas accounting and benchmarks remain open.
 Native value, bank/EVM balances, native-to-EVM callbacks and general arrays are
 unsupported. The lab has no live transaction authentication, signed broadcast,
 RPC, indexed/finalized receipt, network upgrade, replay test, independent
-security review or Makalu recovery test. Chain owner decisions on route,
-creation identity, failure policy and consensus gas/ABI are still required
-before a production-facing app interface can be fixed or activated.
+security review or Makalu recovery test. The client confirmed gateway route,
+salted child identity and fail-whole policy; consensus gas/ABI, salt
+reservation/collision, receipt and upgrade reviews remain required before
+production-facing registration or activation.
