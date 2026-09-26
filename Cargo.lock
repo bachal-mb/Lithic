@@ -1287,6 +1287,7 @@ dependencies = [
  "lithic-evm",
  "lithic-lithovm",
  "lithic-syntax",
+ "serde_json",
 ]
 
 [[package]]

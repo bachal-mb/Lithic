@@ -10,15 +10,16 @@ use lithovm_bytecode::{
     Program, ReturnValue, Statement, StorageField, ValueType, MAX_BLOCK_DEPTH, MAX_LOCALS,
     MAX_STATEMENTS, VERSION,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use std::fmt;
 
 pub const TARGET: &str = "lithovm-native-v11";
 pub const ARTIFACT_VERSION: u8 = 1;
+pub mod verification;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EntrypointArtifact {
     pub name: String,
     pub signature: String,
@@ -32,8 +33,8 @@ struct CompiledConstant {
     word: [u8; 32],
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Artifact {
     pub artifact_version: u8,
     pub compiler: String,

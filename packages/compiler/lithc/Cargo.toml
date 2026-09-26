@@ -13,3 +13,8 @@ path = "src/main.rs"
 lithic-evm = { path = "../lithic-evm" }
 lithic-lithovm = { path = "../lithic-lithovm" }
 lithic-syntax = { path = "../lithic-syntax" }
+serde_json = "1"
+
+[[bin]]
+name = "lithverify"
+path = "src/verify.rs"

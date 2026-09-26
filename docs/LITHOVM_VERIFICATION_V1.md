@@ -1,6 +1,30 @@
 # LithoVM artifact and source verification v1
 
-Status: compiler and schema candidate; no LithoScan worker or chain deployment
+Status: compiler, schema and offline rebuild worker candidate; live indexer wiring pending
+
+## Offline worker
+
+Build with `cargo build -p lithc --bin lithverify --release` and invoke:
+
+```text
+lithverify REQUEST.json 700777 0x0000000000000000000000000000000000000007 CHAIN_CODE.bin
+```
+
+The indexer must obtain raw native bytecode and identity independently at a
+pinned block from its configured chain adapter. Never accept the chain-code
+file, chain ID or observed address from the source submitter. Exit zero returns
+JSON containing source hash, rebuilt code hash and compiler version; nonzero
+returns an error on stderr and no success payload. Both input files are capped
+at 4 MiB. Source paths are metadata only and are never opened by the worker.
+Run compiler jobs with process CPU/memory/time limits in the hosting service.
+
+The library boundary is `lithic_lithovm::verification::verify`. It rejects
+unknown/duplicate JSON fields, noncanonical identities, multiple sources,
+source-hash mismatch, compiler-version mismatch, modified artifact metadata,
+and any difference between rebuilt and independently observed bytecode.
+The compiler version alone is not a release identity: production workers must
+pin an approved executable digest/provenance as well. This local candidate has
+not been published as a production compiler release.
 
 `lithc --emit lithovm` emits a versioned JSON artifact containing the exact
 compiler version, target, bytecode version, raw-source Keccak-256, bytecode
@@ -37,9 +61,9 @@ The lifecycle is monotonic:
 
 ```text
 prepared -> submitted -> included -> verified
-                         |           |
-                         v           v
-                       failed   verification_failed
+                |            |
+                v            v
+              failed   verification_failed
 ```
 
 `failed` records transaction/deployment failure. `verification_failed` means a
