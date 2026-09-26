@@ -5,7 +5,7 @@ This repository contains a preview compiler backend plus development scaffolds. 
 | Tool | Current implementation |
 |---|---|
 | lithc | Parses/checks declarations and emits ABI plus executable EVM or versioned native LithoVM bytecode for the documented subset. Native v11 adds typed single/nested map storage and checked `u256` token arithmetic to the v10 executable core. Unsupported semantics fail the complete build. |
-| lithovm-host | Transactional chain-state seam plus in-memory conformance adapter. Produces structured failure/gas outcomes, executes registered zero-argument child calls with remaining gas, atomically commits the full call tree, and rejects reentrancy. No Lithosphere persistence/RPC adapter is included. |
+| lithovm-host | Transactional chain-state seam plus in-memory conformance adapter. Produces structured failure/gas outcomes, atomically executes call trees, and rejects reentrancy. Deployment v1 adds code hashes, deterministic addresses, value transfer and optional initializer execution in one transaction. No Lithosphere persistence/RPC adapter is included. |
 | lithfmt | Parse-checked, literal-preserving whitespace normalization; supports --check. |
 | lithlint | Declaration-level naming and AI-budget rules; supports --deny-warnings. Not a security analyzer. |
 | lithdev | Placeholder shell entrypoint. No deployment execution. |

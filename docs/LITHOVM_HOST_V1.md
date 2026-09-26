@@ -18,6 +18,10 @@ loads and stages contract code, storage and balances. The adapter contract is:
 `InMemoryState` is the executable conformance adapter. A Lithosphere adapter
 must satisfy the same contract using the chain's cache/multistore transaction.
 
+The host also exposes the deterministic, atomic
+[deployment interface v1](LITHOVM_DEPLOYMENT_V1.md). Code, code hash, attached
+value and optional initializer effects share one state transaction.
+
 ## Execution and receipts
 
 `Vm::execute_transactionally` returns `ExecutionOutcome`, preserving failure
@@ -62,7 +66,8 @@ does not change storage, contract balances or external balances.
   chain must stage the originating account debit and contract credit before
   invoking the host transaction.
 - The host gas schedule has no refund mechanism.
-- No disk, RPC, consensus-bank or Makalu adapter is included here.
+- No disk, RPC, consensus-bank or Makalu adapter is included here. Deployment
+  nonce authentication remains the embedding chain's responsibility.
 
 These limits keep the chain seam explicit and prevent the in-memory adapter
 from being mistaken for production integration.

@@ -17,11 +17,11 @@ to `owner`; later initialization reverts. There is no mint entrypoint. Burning
 is supported and can reduce circulating and total supply, but supply can never
 exceed the initial constant through the executable interface.
 
-The eventual initial holder and transfers implementing the approved LITHO
+The host's deployment v1 conformance path now installs code and invokes this
+initializer in one atomic state transaction. The eventual initial holder and transfers implementing the approved LITHO
 allocation are intentionally absent. They require a reviewed deployment plan
-and explicit deployment approval. The production deployment interface must
-atomically install code and initialize it so an unrelated caller cannot win
-the one-time initializer.
+and explicit deployment approval. Chain integration must preserve the tested
+atomic deploy/init behavior so an unrelated caller cannot win the initializer.
 
 The current native ABI has no string type, so name and symbol use padded
 `bytes32` getters. Review must decide whether that is the production LEP100

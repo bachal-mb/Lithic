@@ -2,6 +2,8 @@ use lithovm::{
     EventRecord, ExecutionContext, ExecutionFailure, ExecutionOutcome, ExecutionResult,
     FailureKind, Storage, Vm,
 };
+use lithovm_bytecode::parse;
+use sha3::{Digest, Keccak256};
 use std::collections::BTreeMap;
 
 pub type Address = [u8; 32];
@@ -10,8 +12,44 @@ pub type Selector = [u8; 32];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeployedContract {
     pub bytecode: Vec<u8>,
+    pub code_hash: [u8; 32],
     pub storage: Storage,
     pub entrypoints: BTreeMap<Selector, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Initializer {
+    pub function: String,
+    pub arguments: Vec<[u8; 32]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeployRequest {
+    pub deployer: Address,
+    pub nonce: u64,
+    pub bytecode: Vec<u8>,
+    pub entrypoints: BTreeMap<Selector, String>,
+    pub initializer: Option<Initializer>,
+    pub value: [u8; 32],
+    pub gas_limit: u64,
+    pub block_height: u64,
+    pub block_timestamp: u64,
+    pub chain_id: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeploySuccess {
+    pub contract: Address,
+    pub code_hash: [u8; 32],
+    pub initializer_result: Option<ExecutionResult>,
+    pub gas_used: u64,
+    pub events: Vec<CommittedEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeployOutcome {
+    Success(DeploySuccess),
+    Failure(HostFailure),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +84,10 @@ pub enum HostFailureKind {
     MissingContract,
     UnknownSelector,
     Reentrancy,
+    InvalidBytecode,
+    InvalidEntrypoint,
+    ContractExists,
+    InsufficientBalance,
     State,
 }
 
@@ -113,6 +155,134 @@ impl<S> TransactionalHost<S> {
 }
 
 impl<S: TransactionalState> TransactionalHost<S> {
+    pub fn deploy(&mut self, request: DeployRequest) -> DeployOutcome {
+        let code_hash = code_hash(&request.bytecode);
+        let address =
+            contract_address(request.deployer, request.nonce, code_hash, request.chain_id);
+        let program = match parse(&request.bytecode) {
+            Ok(program) => program,
+            Err(error) => {
+                return DeployOutcome::Failure(HostFailure {
+                    kind: HostFailureKind::InvalidBytecode,
+                    message: error.to_string(),
+                    gas_used: 0,
+                    failed_contract: address,
+                })
+            }
+        };
+        for function in request.entrypoints.values() {
+            if !program
+                .functions
+                .iter()
+                .any(|candidate| candidate.name == *function)
+            {
+                return DeployOutcome::Failure(HostFailure {
+                    kind: HostFailureKind::InvalidEntrypoint,
+                    message: format!("entrypoint '{function}' is not present in bytecode"),
+                    gas_used: 0,
+                    failed_contract: address,
+                });
+            }
+        }
+        let mut transaction = match self.state.begin_transaction() {
+            Ok(transaction) => transaction,
+            Err(message) => return DeployOutcome::Failure(state_failure(message, 0, address)),
+        };
+        match transaction.load_contract(&address) {
+            Ok(Some(_)) => {
+                return DeployOutcome::Failure(HostFailure {
+                    kind: HostFailureKind::ContractExists,
+                    message: "derived contract address is already deployed".into(),
+                    gas_used: 0,
+                    failed_contract: address,
+                })
+            }
+            Ok(None) => {}
+            Err(message) => {
+                return DeployOutcome::Failure(state_failure(message, 0, address));
+            }
+        }
+        let deployer_balance = match load_balance(&transaction, request.deployer, 0, address) {
+            Ok(balance) => balance,
+            Err(failure) => return DeployOutcome::Failure(failure),
+        };
+        let Some(deployer_balance) = debit(deployer_balance, request.value) else {
+            return DeployOutcome::Failure(HostFailure {
+                kind: HostFailureKind::InsufficientBalance,
+                message: "deployment value exceeds deployer balance".into(),
+                gas_used: 0,
+                failed_contract: address,
+            });
+        };
+        if let Err(failure) = store_balance(
+            &mut transaction,
+            request.deployer,
+            deployer_balance,
+            0,
+            address,
+        ) {
+            return DeployOutcome::Failure(failure);
+        }
+        if let Err(failure) = store_balance(&mut transaction, address, request.value, 0, address) {
+            return DeployOutcome::Failure(failure);
+        }
+        if let Err(failure) = store_contract(
+            &mut transaction,
+            address,
+            DeployedContract {
+                bytecode: request.bytecode,
+                code_hash,
+                storage: Storage::default(),
+                entrypoints: request.entrypoints,
+            },
+            0,
+        ) {
+            return DeployOutcome::Failure(failure);
+        }
+
+        let mut events = Vec::new();
+        let mut active_contracts = vec![address];
+        let initialized = if let Some(initializer) = request.initializer {
+            let frame = FrameRequest {
+                contract: address,
+                function: initializer.function,
+                arguments: initializer.arguments,
+                gas_limit: request.gas_limit,
+                caller: request.deployer,
+                value: request.value,
+                block_height: request.block_height,
+                block_timestamp: request.block_timestamp,
+                chain_id: request.chain_id,
+                depth: 0,
+            };
+            match execute_frame(
+                &self.vm,
+                &mut transaction,
+                frame,
+                &mut events,
+                &mut active_contracts,
+            ) {
+                Ok((result, gas_used)) => Some((result, gas_used)),
+                Err(failure) => return DeployOutcome::Failure(failure),
+            }
+        } else {
+            None
+        };
+        let (initializer_result, gas_used) = initialized
+            .map(|(result, gas)| (Some(result), gas))
+            .unwrap_or((None, 0));
+        match transaction.commit() {
+            Ok(()) => DeployOutcome::Success(DeploySuccess {
+                contract: address,
+                code_hash,
+                initializer_result,
+                gas_used,
+                events,
+            }),
+            Err(message) => DeployOutcome::Failure(state_failure(message, gas_used, address)),
+        }
+    }
+
     pub fn execute(&mut self, request: CallRequest) -> HostOutcome {
         let mut transaction = match self.state.begin_transaction() {
             Ok(transaction) => transaction,
@@ -162,6 +332,28 @@ impl<S: TransactionalState> TransactionalHost<S> {
             Err(failure) => HostOutcome::Failure(failure),
         }
     }
+}
+
+pub fn code_hash(bytecode: &[u8]) -> [u8; 32] {
+    Keccak256::digest(bytecode).into()
+}
+
+pub fn contract_address(
+    deployer: Address,
+    nonce: u64,
+    code_hash: [u8; 32],
+    chain_id: u64,
+) -> Address {
+    let mut hasher = Keccak256::new();
+    hasher.update(b"LITHOVM_DEPLOY_V1");
+    hasher.update(chain_id.to_be_bytes());
+    hasher.update(deployer);
+    hasher.update(nonce.to_be_bytes());
+    hasher.update(code_hash);
+    let digest = hasher.finalize();
+    let mut address = [0; 32];
+    address[12..].copy_from_slice(&digest[12..]);
+    address
 }
 
 struct FrameRequest {
@@ -338,7 +530,7 @@ fn load_contract<T: StateTransaction>(
     address: Address,
     gas_used: u64,
 ) -> Result<DeployedContract, HostFailure> {
-    state
+    let contract = state
         .load_contract(&address)
         .map_err(|message| state_failure(message, gas_used, address))?
         .ok_or_else(|| HostFailure {
@@ -346,7 +538,16 @@ fn load_contract<T: StateTransaction>(
             message: "contract is not deployed".into(),
             gas_used,
             failed_contract: address,
-        })
+        })?;
+    if code_hash(&contract.bytecode) != contract.code_hash {
+        return Err(HostFailure {
+            kind: HostFailureKind::State,
+            message: "persisted contract code hash does not match bytecode".into(),
+            gas_used,
+            failed_contract: address,
+        });
+    }
+    Ok(contract)
 }
 
 fn store_contract<T: StateTransaction>(

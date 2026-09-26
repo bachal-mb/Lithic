@@ -1,7 +1,8 @@
 use lithic_lithovm::compile;
 use lithovm::{FailureKind, Storage};
 use lithovm_host::{
-    CallRequest, DeployedContract, HostFailureKind, HostOutcome, InMemoryState, TransactionalHost,
+    code_hash, CallRequest, DeployedContract, HostFailureKind, HostOutcome, InMemoryState,
+    TransactionalHost,
 };
 use std::collections::BTreeMap;
 
@@ -26,8 +27,10 @@ fn contract(
     source: &str,
     entrypoints: impl IntoIterator<Item = ([u8; 32], &'static str)>,
 ) -> DeployedContract {
+    let bytecode = bytecode(source);
     DeployedContract {
-        bytecode: bytecode(source),
+        code_hash: code_hash(&bytecode),
+        bytecode,
         storage: Storage::default(),
         entrypoints: entrypoints
             .into_iter()
@@ -164,4 +167,26 @@ fn unknown_selector_and_reentrancy_fail_without_committing() {
     };
     assert_eq!(failure.kind, HostFailureKind::Reentrancy);
     assert_eq!(host.state(), &before_reentrancy);
+}
+
+#[test]
+fn corrupted_persisted_code_hash_fails_closed() {
+    let parent = address(1);
+    let child = address(2);
+    let selector = [0x53; 32];
+    let mut state = InMemoryState::default();
+    let mut corrupted = contract(PARENT, []);
+    corrupted.code_hash = [0xff; 32];
+    state.deploy(parent, corrupted);
+    state.deploy(child, contract(CHILD, [(selector, "succeed")]));
+    state.set_balance(parent, word(100));
+    let original = state.clone();
+    let mut host = TransactionalHost::new(state);
+
+    let HostOutcome::Failure(failure) = host.execute(request(parent, child, selector)) else {
+        panic!("corrupted code must fail");
+    };
+    assert_eq!(failure.kind, HostFailureKind::State);
+    assert!(failure.message.contains("code hash"));
+    assert_eq!(host.state(), &original);
 }

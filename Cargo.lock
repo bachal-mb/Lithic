@@ -1356,6 +1356,8 @@ dependencies = [
  "hex",
  "lithic-lithovm",
  "lithovm",
+ "lithovm-bytecode",
+ "sha3",
 ]
 
 [[package]]
