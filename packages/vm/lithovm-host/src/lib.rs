@@ -2,7 +2,7 @@ use lithovm::{
     EventRecord, ExecutionContext, ExecutionFailure, ExecutionOutcome, ExecutionResult,
     FailureKind, Storage, Vm,
 };
-use lithovm_bytecode::parse;
+use lithovm_bytecode::{function_selector, parse};
 use sha3::{Digest, Keccak256};
 use std::collections::BTreeMap;
 
@@ -28,7 +28,6 @@ pub struct DeployRequest {
     pub deployer: Address,
     pub nonce: u64,
     pub bytecode: Vec<u8>,
-    pub entrypoints: BTreeMap<Selector, String>,
     pub initializer: Option<Initializer>,
     pub value: [u8; 32],
     pub gas_limit: u64,
@@ -170,15 +169,15 @@ impl<S: TransactionalState> TransactionalHost<S> {
                 })
             }
         };
-        for function in request.entrypoints.values() {
-            if !program
-                .functions
-                .iter()
-                .any(|candidate| candidate.name == *function)
+        let mut entrypoints = BTreeMap::new();
+        for function in &program.functions {
+            if entrypoints
+                .insert(function_selector(function), function.name.clone())
+                .is_some()
             {
                 return DeployOutcome::Failure(HostFailure {
                     kind: HostFailureKind::InvalidEntrypoint,
-                    message: format!("entrypoint '{function}' is not present in bytecode"),
+                    message: "canonical function selector collision".into(),
                     gas_used: 0,
                     failed_contract: address,
                 });
@@ -233,7 +232,7 @@ impl<S: TransactionalState> TransactionalHost<S> {
                 bytecode: request.bytecode,
                 code_hash,
                 storage: Storage::default(),
-                entrypoints: request.entrypoints,
+                entrypoints,
             },
             0,
         ) {

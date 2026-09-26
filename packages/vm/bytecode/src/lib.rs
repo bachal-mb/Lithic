@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Result};
+use sha3::{Digest, Keccak256};
 
 pub const MAGIC: &[u8; 7] = b"LITHOVM";
 pub const LEGACY_VERSION: u8 = 1;
@@ -142,6 +143,22 @@ pub struct Function {
     pub parameters: Vec<ValueType>,
     pub return_type: ValueType,
     pub return_value: ReturnValue,
+}
+
+/// Returns the canonical native ABI signature used for call selection.
+pub fn function_signature(function: &Function) -> String {
+    let parameters = function
+        .parameters
+        .iter()
+        .map(|value_type| value_type.name())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}({parameters})", function.name)
+}
+
+/// Returns the full Keccak-256 digest of the canonical native ABI signature.
+pub fn function_selector(function: &Function) -> [u8; 32] {
+    Keccak256::digest(function_signature(function).as_bytes()).into()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1661,6 +1678,22 @@ mod tests {
         };
         *count = vec![Instruction::Constant(ValueType::Bool, [0; 32])];
         assert!(invalid.encode().is_err());
+    }
+
+    #[test]
+    fn canonical_selector_matches_the_published_vector() {
+        let function = Function {
+            name: "transfer".into(),
+            parameters: vec![ValueType::Address, ValueType::U256],
+            return_type: ValueType::Bool,
+            return_value: ReturnValue::Constant([0; 32]),
+        };
+
+        assert_eq!(function_signature(&function), "transfer(address,u256)");
+        assert_eq!(
+            hex::encode(function_selector(&function)),
+            "f61367304e4e32065cad538b10a44bb599f78e0771530108572d225c74122c1f"
+        );
     }
 
     #[test]

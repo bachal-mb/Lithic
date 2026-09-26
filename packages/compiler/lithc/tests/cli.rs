@@ -121,7 +121,12 @@ fn lithovm_mode_emits_a_versioned_native_artifact() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("\"target\": \"lithovm-native-v11\""));
+    assert!(stdout.contains("\"artifactVersion\": 1"));
+    assert!(stdout.contains("\"compilerVersion\": \"0.2.0\""));
     assert!(stdout.contains("\"bytecodeVersion\": 11"));
+    assert!(stdout.contains("\"sourceHash\": \"0x"));
+    assert!(stdout.contains("\"codeHash\": \"0x"));
+    assert!(stdout.contains("\"entrypoints\": ["));
     assert!(stdout.contains("\"bytecode\": \"0x4c4954484f564d0b"));
 }
 

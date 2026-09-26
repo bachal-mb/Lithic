@@ -3,7 +3,6 @@ use lithovm_host::{
     code_hash, contract_address, DeployOutcome, DeployRequest, HostFailureKind, InMemoryState,
     Initializer, TransactionalHost,
 };
-use std::collections::BTreeMap;
 
 fn address(value: u8) -> [u8; 32] {
     let mut address = [0; 32];
@@ -41,7 +40,6 @@ fn request(bytecode: Vec<u8>, deployer: [u8; 32], nonce: u64) -> DeployRequest {
         deployer,
         nonce,
         bytecode,
-        entrypoints: BTreeMap::new(),
         initializer: Some(Initializer {
             function: "initialize".into(),
             arguments: vec![deployer],
@@ -89,6 +87,18 @@ fn lax_deploy_and_initialize_commit_atomically() {
     assert_eq!(host.state().balance(&expected_address), word(25));
     let deployed = host.state().contract(&expected_address).unwrap();
     assert_eq!(deployed.code_hash, expected_hash);
+    let transfer_selector: [u8; 32] =
+        hex::decode("f61367304e4e32065cad538b10a44bb599f78e0771530108572d225c74122c1f")
+            .unwrap()
+            .try_into()
+            .unwrap();
+    assert_eq!(
+        deployed
+            .entrypoints
+            .get(&transfer_selector)
+            .map(String::as_str),
+        Some("transfer")
+    );
     assert_eq!(
         deployed.storage.get("total_supply"),
         Some(&decimal_word("10000000000000000000000000000"))
@@ -125,7 +135,7 @@ fn failed_initializer_discards_code_storage_and_value_transfer() {
 }
 
 #[test]
-fn invalid_artifact_entrypoint_collision_and_value_fail_closed() {
+fn invalid_artifact_collision_and_value_fail_closed() {
     let deployer = address(7);
     let mut state = InMemoryState::default();
     state.set_balance(deployer, word(100));
@@ -143,14 +153,6 @@ fn invalid_artifact_entrypoint_collision_and_value_fail_closed() {
     let bytecode = compile_bytecode(include_str!(
         "../../../../sdk/contracts/standards/lax_lep100_v11.lithic"
     ));
-    let mut bad_entrypoint = request(bytecode.clone(), deployer, 4);
-    bad_entrypoint.entrypoints.insert([1; 32], "missing".into());
-    let DeployOutcome::Failure(failure) = host.deploy(bad_entrypoint) else {
-        panic!("unknown entrypoint must fail");
-    };
-    assert_eq!(failure.kind, HostFailureKind::InvalidEntrypoint);
-    assert_eq!(host.state(), &original);
-
     let deployed = request(bytecode.clone(), deployer, 5);
     assert!(matches!(
         host.deploy(deployed.clone()),

@@ -6,14 +6,24 @@
 
 use lithic_syntax::{Contract, Item, Type};
 use lithovm_bytecode::{
-    EventDefinition, Function, Instruction, MapField, Program, ReturnValue, Statement,
-    StorageField, ValueType, MAX_BLOCK_DEPTH, MAX_LOCALS, MAX_STATEMENTS, VERSION,
+    function_selector, function_signature, EventDefinition, Function, Instruction, MapField,
+    Program, ReturnValue, Statement, StorageField, ValueType, MAX_BLOCK_DEPTH, MAX_LOCALS,
+    MAX_STATEMENTS, VERSION,
 };
 use serde::Serialize;
 use sha3::{Digest, Keccak256};
 use std::fmt;
 
 pub const TARGET: &str = "lithovm-native-v11";
+pub const ARTIFACT_VERSION: u8 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntrypointArtifact {
+    pub name: String,
+    pub signature: String,
+    pub selector: String,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CompiledConstant {
@@ -25,9 +35,15 @@ struct CompiledConstant {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
+    pub artifact_version: u8,
+    pub compiler: String,
+    pub compiler_version: String,
     pub contract_name: String,
     pub target: String,
     pub bytecode_version: u8,
+    pub source_hash: String,
+    pub code_hash: String,
+    pub entrypoints: Vec<EntrypointArtifact>,
     pub abi: serde_json::Value,
     pub bytecode: String,
 }
@@ -83,10 +99,10 @@ pub fn compile(source: &str) -> Result<Artifact, CompileError> {
     if !errors.is_empty() {
         return Err(CompileError { messages: errors });
     }
-    compile_contract(&contract)
+    compile_contract(&contract, source)
 }
 
-fn compile_contract(contract: &Contract) -> Result<Artifact, CompileError> {
+fn compile_contract(contract: &Contract, source: &str) -> Result<Artifact, CompileError> {
     let mut errors = Vec::new();
     let mut functions = Vec::new();
     let mut abi = Vec::new();
@@ -195,13 +211,32 @@ fn compile_contract(contract: &Contract) -> Result<Artifact, CompileError> {
     let bytes = program
         .encode()
         .map_err(|error| CompileError::one(format!("bytecode encoding failed: {error}")))?;
+    let entrypoints = program
+        .functions
+        .iter()
+        .map(|function| EntrypointArtifact {
+            name: function.name.clone(),
+            signature: function_signature(function),
+            selector: format!("0x{}", hex::encode(function_selector(function))),
+        })
+        .collect();
     Ok(Artifact {
+        artifact_version: ARTIFACT_VERSION,
+        compiler: "lithc".to_string(),
+        compiler_version: env!("CARGO_PKG_VERSION").to_string(),
         contract_name: contract.name.clone(),
         target: TARGET.to_string(),
         bytecode_version: VERSION,
+        source_hash: keccak_hex(source.as_bytes()),
+        code_hash: keccak_hex(&bytes),
+        entrypoints,
         abi: serde_json::Value::Array(abi),
         bytecode: format!("0x{}", hex::encode(bytes)),
     })
+}
+
+fn keccak_hex(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(Keccak256::digest(bytes)))
 }
 
 fn compile_function(
@@ -1540,6 +1575,33 @@ mod tests {
             .return_value,
             word_from_u64(9005)
         );
+    }
+
+    #[test]
+    fn artifact_exposes_canonical_verification_metadata() {
+        let source =
+            "contract C { pub fn transfer(to: address, amount: u256) -> bool { return true; } }";
+        let artifact = compile(source).unwrap();
+
+        assert_eq!(artifact.artifact_version, 1);
+        assert_eq!(artifact.compiler, "lithc");
+        assert_eq!(artifact.compiler_version, "0.2.0");
+        assert_eq!(
+            artifact.source_hash,
+            "0x32ad261ca2d8fa0510478c6d4559a9f8416cc38960a48dc78b7d91c72f6fcc73"
+        );
+        assert_eq!(
+            artifact.code_hash,
+            "0xe73e57c4e59ec327bccb0480e3d1eaefb3403e207c740c1a388745a10bb2fb91"
+        );
+        assert_eq!(artifact.entrypoints.len(), 1);
+        assert_eq!(artifact.entrypoints[0].name, "transfer");
+        assert_eq!(artifact.entrypoints[0].signature, "transfer(address,u256)");
+        assert_eq!(
+            artifact.entrypoints[0].selector,
+            "0xf61367304e4e32065cad538b10a44bb599f78e0771530108572d225c74122c1f"
+        );
+        assert_eq!(compile(source).unwrap(), artifact);
     }
 
     #[test]

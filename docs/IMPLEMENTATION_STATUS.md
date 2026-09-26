@@ -4,8 +4,8 @@ This repository contains a preview compiler backend plus development scaffolds. 
 
 | Tool | Current implementation |
 |---|---|
-| lithc | Parses/checks declarations and emits ABI plus executable EVM or versioned native LithoVM bytecode for the documented subset. Native v11 adds typed single/nested map storage and checked `u256` token arithmetic to the v10 executable core. Unsupported semantics fail the complete build. |
-| lithovm-host | Transactional chain-state seam plus in-memory conformance adapter. Produces structured failure/gas outcomes, atomically executes call trees, and rejects reentrancy. Deployment v1 adds code hashes, deterministic addresses, value transfer and optional initializer execution in one transaction. No Lithosphere persistence/RPC adapter is included. |
+| lithc | Parses/checks declarations and emits ABI plus executable EVM or versioned native LithoVM bytecode for the documented subset. Native v11 artifacts include compiler/target versions, exact source/code hashes and canonical full-hash entrypoint selectors. Unsupported semantics fail the complete build. |
+| lithovm-host | Transactional chain-state seam plus in-memory conformance adapter. Produces structured failure/gas outcomes, atomically executes call trees, and rejects reentrancy. Deployment v1 derives selectors from validated bytecode and adds code hashes, deterministic addresses, value transfer and optional initializer execution in one transaction. No Lithosphere persistence/RPC adapter is included. |
 | lithfmt | Parse-checked, literal-preserving whitespace normalization; supports --check. |
 | lithlint | Declaration-level naming and AI-budget rules; supports --deny-warnings. Not a security analyzer. |
 | lithdev | Placeholder shell entrypoint. No deployment execution. |
@@ -37,7 +37,8 @@ campaigns do not replace a production security review.
 
 A [local execution experiment](LITHOVM_EXECUTION_LAB.md) remains historical.
 `lithc --emit lithovm` now emits the versioned native artifact described in
-[Native LithoVM ABI v11](LITHOVM_ABI_V11.md), while retaining v1 through v10 decoding compatibility. This establishes the combined
+[Native LithoVM ABI v11](LITHOVM_ABI_V11.md) and the
+[verification interface](LITHOVM_VERIFICATION_V1.md), while retaining v1 through v10 decoding compatibility. This establishes the combined
 compiler/runtime boundary; it does not yet establish production readiness.
 
 The tested front end from `KaJLabs/Lithosphere/toolchain` has been imported here. See [import provenance and command changes](FRONTEND_IMPORT.md).

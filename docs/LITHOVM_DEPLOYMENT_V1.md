@@ -6,10 +6,15 @@ chain RPC or deployment authorization
 ## Request
 
 `DeployRequest` contains the authenticated deployer, account nonce, chain ID,
-native v11 bytecode, selector-to-function registrations, optional initializer,
-attached native value, gas limit and block context. The embedding chain must
+native v11 bytecode, optional initializer, attached native value, gas limit
+and block context. The embedding chain must
 source deployer, nonce and block values from consensus state; clients must not
 be able to assert them independently.
+
+The host parses the validated bytecode and registers every function under the
+full 32-byte `keccak256(name(type,...))` selector. Registrations cannot be
+supplied or overridden by a deployer. The compiler emits the same canonical
+signature and selector in its artifact.
 
 The bytecode code hash is:
 
@@ -35,11 +40,11 @@ sequence and reject replay before calling this interface.
 
 ## Atomicity
 
-Deployment validates bytecode and registered entrypoint names before opening a
-state transaction. Within one transaction it rejects address collisions,
+Deployment validates bytecode and derives entrypoints before opening a state
+transaction. Within one transaction it rejects address collisions,
 debits attached value, stores bytecode and code hash, and runs the optional
 initializer. Code, balances, initializer storage and events commit together.
-Invalid bytecode, invalid entrypoints, insufficient balance, initializer
+Invalid bytecode, selector collisions, insufficient balance, initializer
 failure, out-of-gas or commit failure publishes none of them.
 
 The initializer sees the deployer as `msg.sender` and attached value as
@@ -55,17 +60,18 @@ Mismatch fails closed as a state-integrity error.
 result, total gas and committed events. This is the minimum included-state
 payload for a future LithoScan deployment record and source-verification job.
 The external lifecycle still needs a versioned RPC/indexer schema for
-`submitted`, `included`, `initialized`, `failed` and `verified` states,
-including transaction/block identifiers and failure details.
+`prepared`, `submitted`, `included`, `failed`, `verified` and
+`verification_failed` states. The portable schema is
+`sdk/schemas/lithovm.deployment-status.schema.json`; chain RPC and indexer
+implementations remain external integration work.
 
 ## Remaining gates
 
 - consensus state/bank adapter and authenticated nonce handling;
-- canonical selector derivation from compiler ABI rather than supplied maps;
 - deploy/call RPC, signing and fee simulation;
 - code-size/deployment gas pricing and denial-of-service limits;
 - code/address compatibility and upgrade policy;
 - Makalu success, collision, replay, initializer failure and restart tests;
-- source bundle/settings schema and deterministic LithoScan rebuild worker.
+- deterministic LithoScan rebuild worker and persisted indexer integration;
 
 This interface does not authorize a Makalu, production or LAX deployment.

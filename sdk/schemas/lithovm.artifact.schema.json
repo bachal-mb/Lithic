@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lithic.at/schemas/lithovm.artifact.schema.json",
+  "title": "Lithic native LithoVM artifact v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifactVersion",
+    "compiler",
+    "compilerVersion",
+    "contractName",
+    "target",
+    "bytecodeVersion",
+    "sourceHash",
+    "codeHash",
+    "entrypoints",
+    "abi",
+    "bytecode"
+  ],
+  "properties": {
+    "artifactVersion": { "const": 1 },
+    "compiler": { "const": "lithc" },
+    "compilerVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" },
+    "contractName": { "type": "string", "minLength": 1 },
+    "target": { "const": "lithovm-native-v11" },
+    "bytecodeVersion": { "const": 11 },
+    "sourceHash": { "$ref": "#/$defs/hash" },
+    "codeHash": { "$ref": "#/$defs/hash" },
+    "entrypoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "signature", "selector"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "signature": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*\\([^)]*\\)$" },
+          "selector": { "$ref": "#/$defs/hash" }
+        }
+      }
+    },
+    "abi": { "type": "array" },
+    "bytecode": { "type": "string", "pattern": "^0x[0-9a-f]+$" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" }
+  }
+}
