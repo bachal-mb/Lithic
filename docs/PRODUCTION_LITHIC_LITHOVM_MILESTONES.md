@@ -8,13 +8,15 @@ validates and executes the exact artifact with deterministic results.
 
 ## M1 — Versioned artifact and execution boundary
 
-Status: implemented in candidate
+Status: implemented in candidate; verification metadata is now part of the artifact
 
 - versioned, strictly decoded native artifact;
 - fixed static value ABI and canonical encoding;
 - deterministic function dispatch and gas rejection;
 - compiler-to-runtime execution tests;
 - fail-closed rejection of unsupported source and malformed bytecode.
+- reproducible source/code hashes and canonical full-hash entrypoint selectors;
+- portable artifact, verification-request and deployment-status schemas.
 
 ## M2 — Typed executable core
 
@@ -43,7 +45,7 @@ Status: scalar and typed map storage with explicit rollback implemented through 
 
 ## M4 — Host effects and gas
 
-Status: context, events, staged native transfers and outbound call intents implemented through version 7
+Status: context, events, staged native transfers and outbound call intents implemented through version 7; transactional host/deployment candidate added
 
 - caller, value, block and chain context implemented behind explicit runtime APIs;
 - typed ordered event schemas and successful-call event records implemented;
@@ -52,6 +54,8 @@ Status: context, events, staged native transfers and outbound call intents imple
 - remaining synchronous host execution, return data and reentrancy policy;
 - context opcodes use the current versioned instruction gas schedule; host-call gas remains;
 - deterministic receipts and observable failure semantics.
+- atomic host deployment derives selectors from validated bytecode and commits
+  code, value, initializer state and events together in the conformance adapter.
 
 ## M5 — LEP100-15
 
@@ -62,6 +66,9 @@ Status: context, events, staged native transfers and outbound call intents imple
 - portable conformance vectors and negative tests.
 
 ## M6 — Makalu integration
+
+Status: blocked on identifying and approving the authenticated Lithosphere
+native runtime/RPC adapter; no Makalu deployment has been performed
 
 - deterministic deployment and call interface in the L1 runtime;
 - RPC, wallet, explorer and indexer support;
