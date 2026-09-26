@@ -52,6 +52,16 @@ direct-wallet restriction avoids that first-profile ambiguity. The live keeper
 must still call the tested message seam from the validated state transition,
 preserve discard-only simulation and prove replay behavior before app registration.
 
+The pinned keeper's `ApplyMessageWithConfig` has both the `core.Message` and
+`commit` flag, while `NewEVM` installs a call hook from `precompiles.go`.
+Installing the lab precompile once with `WithPrecompiles` is insufficient:
+the hook replaces the active precompile map when another precompile is called.
+The disabled L1 candidate must route the gateway address through that hook,
+capture message/chain context from the state transition, and test calls through
+an EVM wrapper after another precompile. This has **not** been patched into
+the Lithosphere app. Its immutable release patch set/manifest must remain
+unchanged until a separately reviewed candidate release definition exists.
+
 ## Failure, gas and receipts
 
 Native child failure aborts the whole native operation and returns EVM revert;
