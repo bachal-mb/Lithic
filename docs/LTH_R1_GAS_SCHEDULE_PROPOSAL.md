@@ -2,7 +2,8 @@
 
 2026-09-27. **Disabled local candidate, not approved consensus pricing.**
 Lithosphere Foundation is the chain owner. Alex approved caller-bound salts and
-atomic initialization, not these numerical rates. LTH-03 remains open pending
+atomic initialization and nominated **@Amir Dev as technical approver**, as relayed
+by the user. That nomination does not approve these numerical rates. LTH-03 remains open pending
 Foundation technical review, representative validator tests and independent retest.
 No registration, activation, production contract or LAX deployment is authorized.
 
@@ -111,7 +112,7 @@ go test -mod=mod -tags=lithovm_chain_lab,lithovm_release -run='^$' \
 
 ## Consequences and decisions required
 
-1. **Foundation technical approver:** confirm or revise KV/log/growth rates for
+1. **@Amir Dev, nominated Foundation technical approver:** confirm or revise KV/log/growth rates for
    the disabled review candidate. Do not equate this with production acceptance.
 2. **State scalability:** the current host persists code and all state as one
    record. Charging its real bytes makes token operations more expensive as the

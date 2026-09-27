@@ -74,8 +74,9 @@ test starts from a valid stored contract and changes only its stored hash.
 ## Chain-owner decisions and scope
 
 The user reports Alex confirmed points 1 and 2 on 2026-09-27. The client identifies
-Lithosphere Foundation as chain owner. No numerical gas schedule, named technical
-approver, security acceptance, deployment or activation approval is inferred.
+Lithosphere Foundation as chain owner and explicitly nominates @Amir Dev as
+technical approver. No numerical gas schedule, security acceptance, deployment
+or activation approval is inferred from those confirmations.
 
 1. Approved caller-bound public-factory salt derivation:
    derive an effective salt from a domain tag, authenticated immediate caller
@@ -86,7 +87,7 @@ approver, security acceptance, deployment or activation approval is inferred.
    deployer identity. It changes the currently allowed zero-initializer profile;
    templates declaring initialize must also be initialized atomically.
 3. Remaining: review the [benchmarked pricing candidate](LTH_R1_GAS_SCHEDULE_PROPOSAL.md) for Foundation's technical approval;
-   identify the authorized technical sign-off contact. Baseline
+   @Amir Dev is the nominated technical sign-off contact. Baseline
    native KV charges against the pinned SDK KVGasConfig, log charges against
    EVM LOG economics, and explicit persistent-state-growth charges. Numerical
    values must be backed by benchmarks and approved before registration.
