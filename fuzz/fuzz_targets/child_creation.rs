@@ -5,8 +5,8 @@ use lithic_lithovm::compile;
 use lithovm::FailureKind;
 use lithovm_bytecode::{function_selector, parse, values::Value, ValueType};
 use lithovm_host::{
-    child_contract_address, code_hash, CallRequest, DeployOutcome, DeployRequest, HostFailureKind,
-    HostOutcome, InMemoryState, TransactionalHost,
+    caller_bound_salt, child_contract_address, code_hash, CallRequest, DeployOutcome, DeployRequest, HostFailureKind,
+    HostOutcome, InMemoryState, Initializer, TransactionalHost,
 };
 use std::sync::OnceLock;
 
@@ -29,7 +29,8 @@ fn fixture() -> &'static Fixture {
         ].iter().enumerate() {
             let bytes = hex::decode(&compile(source).unwrap().bytecode[2..]).unwrap();
             if nonce == 0 { initializer = function_selector(&parse(&bytes).unwrap().functions[0]); hash = code_hash(&bytes); }
-            let DeployOutcome::Success(result) = host.deploy_values(DeployRequest { deployer: word(9), nonce: nonce as u64, bytecode: bytes, initializer: None, value: word(0), gas_limit: 100000, block_height: 1, block_timestamp: 2, chain_id: 700777 }) else { panic!("fixture") };
+            let init = (nonce == 0).then(|| Initializer { function: "initialize".into(), arguments: vec![Value::Word(ValueType::Bool, word(1))] });
+            let DeployOutcome::Success(result) = host.deploy_values(DeployRequest { deployer: word(9), nonce: nonce as u64, bytecode: bytes, initializer: init, value: word(0), gas_limit: 100000, block_height: 1, block_timestamp: 2, chain_id: 700777 }) else { panic!("fixture") };
             addresses.push(result.contract);
         }
         host.state_mut().set_balance(addresses[1], word(10));
@@ -48,7 +49,7 @@ fuzz_target!(|data: &[u8]| {
     let parent_accept = data[4] & 1 != 0;
     let salt = word(data[5] as u64);
     let prefund = (data[6] % 16) as u64;
-    let child = child_contract_address(*factory, salt, *hash, 700777);
+    let child = child_contract_address(*factory, caller_bound_salt(word(9), salt), *hash, 700777);
     let mut before = state.clone();
     before.set_balance(child, word(prefund));
     let request = CallRequest {

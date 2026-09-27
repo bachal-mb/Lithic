@@ -3,7 +3,7 @@ use lithovm::{ExecutionContext, ExecutionOutcome, FailureKind, Storage, Vm};
 use lithovm_bytecode::{function_selector, parse, values::Value, ValueType};
 use lithovm_host::{
     CallRequest, DeployOutcome, DeployRequest, HostFailureKind, HostOutcome, InMemoryState,
-    TransactionalHost,
+    Initializer, TransactionalHost,
 };
 
 fn word(n: u64) -> [u8; 32] {
@@ -375,12 +375,9 @@ fn aggregate_event_limit_rolls_back_and_allows_recovery() {
 #[test]
 fn finance_token_pull_uses_caller_allowance_and_rolls_back_after_return() {
     let mut host = TransactionalHost::new(InMemoryState::default());
-    let (token, token_bytes) = deploy(
-        &mut host,
-        include_str!("../../../../sdk/contracts/standards/finance_token_v12.lithic"),
-        0,
-    );
-    let (puller, _) = deploy(&mut host, "contract Puller { pub fn pull(token: address, selector: bytes32, recipient: address, amount: u256, accept: bool) -> bool { let ok: bool = invoke(token, selector, 0, msg.sender, recipient, amount); require(ok); require(accept); return ok; } }", 1);
+    let token_bytes = bytes(include_str!(
+        "../../../../sdk/contracts/standards/finance_token_v12.lithic"
+    ));
     let mut initialization = vec![
         Value::String("Integration Token".into()),
         Value::String("TEST".into()),
@@ -389,10 +386,24 @@ fn finance_token_pull_uses_caller_allowance_and_rolls_back_after_return() {
         value(ValueType::U256, 1000),
     ];
     initialization.extend((0..4).map(|_| value(ValueType::Bool, 1)));
-    assert!(matches!(
-        host.execute_values(request(token, "initialize", initialization)),
-        HostOutcome::Success(_)
-    ));
+    let DeployOutcome::Success(deployed) = host.deploy_values(DeployRequest {
+        deployer: word(9),
+        nonce: 0,
+        bytecode: token_bytes.clone(),
+        initializer: Some(Initializer {
+            function: "initialize".into(),
+            arguments: initialization,
+        }),
+        value: word(0),
+        gas_limit: 100000,
+        block_height: 1,
+        block_timestamp: 2,
+        chain_id: 700777,
+    }) else {
+        panic!("atomic token initialization failed")
+    };
+    let token = deployed.contract;
+    let (puller, _) = deploy(&mut host, "contract Puller { pub fn pull(token: address, selector: bytes32, recipient: address, amount: u256, accept: bool) -> bool { let ok: bool = invoke(token, selector, 0, msg.sender, recipient, amount); require(ok); require(accept); return ok; } }", 1);
     let pull = |amount, accept| {
         request(
             puller,

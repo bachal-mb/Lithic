@@ -60,6 +60,10 @@ func TestRealStateDBFactoryChildAtomicRollback(t *testing.T) {
 		req.Bytecode = ptr(fixture(t, source))
 		req.Function = nil
 		req.Arguments = args()
+		if source == "testdata/child.lithic" {
+			req.Function = ptr("initialize")
+			req.Arguments = args(0)
+		}
 		env.Nonce = nonce
 		result, err := ExecuteFrame(db, key, frame(1000000), false, env, req)
 		if err != nil || !result.Success {
@@ -108,7 +112,7 @@ func TestRealStateDBFactoryChildAtomicRollback(t *testing.T) {
 		t.Fatal("outer revert retained child")
 	}
 	if len(db.Logs()) != 2 {
-		t.Fatalf("expected two template/factory logs after revert, got %d", len(db.Logs()))
+		t.Fatalf("expected two template/factory envelope logs after revert, got %d", len(db.Logs()))
 	}
 	success, err = ExecuteFrame(db, key, frame(1000000), false, env, req)
 	if err != nil || !success.Success {

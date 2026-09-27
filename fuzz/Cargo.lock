@@ -180,6 +180,8 @@ dependencies = [
  "lithovm-bytecode",
  "lithovm-receipts",
  "lithovm-zk-verifier",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

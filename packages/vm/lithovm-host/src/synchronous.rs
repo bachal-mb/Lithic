@@ -95,9 +95,10 @@ impl<T: StateTransaction> Adapter<'_, T> {
                 failed_contract: self.address,
             });
         }
+        let effective_salt = caller_bound_salt(self.context.caller, request.salt);
         let address = child_contract_address(
             self.address,
-            request.salt,
+            effective_salt,
             template.code_hash,
             self.context.chain_id,
         );
@@ -131,6 +132,21 @@ impl<T: StateTransaction> Adapter<'_, T> {
                 failed_contract: request.template,
             })?;
             let entrypoints = validated_entrypoints(&program, address)?;
+            if let Some(initializer) = program.functions.iter().find(|f| f.name == "initialize") {
+                if request.initializer != function_selector(initializer) {
+                    return Err(HostFailure {
+                        kind: if entrypoints.contains_key(&request.initializer) {
+                            HostFailureKind::InvalidEntrypoint
+                        } else {
+                            HostFailureKind::UnknownSelector
+                        },
+                        message: "child declaring initialize requires its initialize selector"
+                            .into(),
+                        gas_used: 0,
+                        failed_contract: address,
+                    });
+                }
+            }
             // The template is code only. Never copy its storage or native balance.
             store_contract(
                 self.state,
@@ -149,7 +165,7 @@ impl<T: StateTransaction> Adapter<'_, T> {
                 code_hash: template.code_hash,
                 origin: DeploymentOrigin::Child {
                     template: request.template,
-                    salt: request.salt,
+                    salt: effective_salt,
                 },
             });
             let result = self.invoke_inner(

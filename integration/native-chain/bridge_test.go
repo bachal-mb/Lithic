@@ -111,3 +111,15 @@ func TestGoRustPersistenceFailureAndMalformedRequests(t *testing.T) {
 		t.Fatal("failed registration")
 	}
 }
+
+func TestDeclaredInitializerCannotBeOmittedOrBypassed(t *testing.T) {
+	for _, function := range []*string{nil, ptr("get")} {
+		req := request(t)
+		req.Function = function
+		req.Arguments = args()
+		result, err := Execute(req, func(string) ([]byte, error) { return nil, nil })
+		if err != nil || result.Success || len(result.Writes) != 0 || len(result.Deployments) != 0 || len(result.Events) != 0 {
+			t.Fatalf("uninitialized deployment escaped: error=%v result=%+v", err, result)
+		}
+	}
+}

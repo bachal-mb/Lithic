@@ -5,6 +5,9 @@ Local candidate, 2026-09-26. Not a deployed RPC or explorer feature.
 `DeploySuccess.deployments` and `HostSuccess.deployments` contain host-generated
 `CommittedDeployment` records, separate from contract events. Each records
 creator, contract, code hash and either transaction nonce or child template/salt.
+After the LTH-R1 caller-binding remediation, child `salt` is the effective salt
+from `caller_bound_salt(immediate_caller, user_salt)`, not the user input. Indexers
+feed it directly into `child_contract_address`; do not hash it a second time.
 They are accumulated in registration order (parent before initializer children)
 and returned only after the host state transaction commits. Failed initialization,
 parent revert, out-of-gas, collision and commit failure return no success journal.

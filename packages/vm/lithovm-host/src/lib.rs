@@ -15,6 +15,17 @@ pub type Selector = [u8; 32];
 pub const MAX_CHILD_CODE_BYTES: usize = 65536;
 pub const CHILD_CREATE_BASE_GAS: u64 = 100;
 
+/// Bind a user salt to the immediate authenticated caller of the creating frame.
+/// Routers are callers, not transparent proxies for transaction origin.
+pub fn caller_bound_salt(caller: Address, user_salt: [u8; 32]) -> [u8; 32] {
+    let mut hash = Keccak256::new();
+    hash.update(b"LITHOVM_CALLER_SALT_V1");
+    hash.update(caller);
+    hash.update(user_salt);
+    hash.finalize().into()
+}
+
+/// Low-level derivation: `salt` must be the effective caller-bound salt.
 pub fn child_contract_address(
     creator: Address,
     salt: [u8; 32],
@@ -156,8 +167,14 @@ pub struct CommittedDeployment {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeploymentOrigin {
-    Transaction { nonce: u64 },
-    Child { template: Address, salt: [u8; 32] },
+    Transaction {
+        nonce: u64,
+    },
+    /// `salt` is the effective caller-bound salt, never the raw user input.
+    Child {
+        template: Address,
+        salt: [u8; 32],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,6 +270,23 @@ impl<S: TransactionalState> TransactionalHost<S> {
             Ok(entrypoints) => entrypoints,
             Err(failure) => return DeployOutcome::Failure(failure),
         };
+        if program
+            .functions
+            .iter()
+            .any(|function| function.name == "initialize")
+            && request
+                .initializer
+                .as_ref()
+                .map(|init| init.function.as_str())
+                != Some("initialize")
+        {
+            return DeployOutcome::Failure(HostFailure {
+                kind: HostFailureKind::InvalidEntrypoint,
+                message: "contract declaring initialize requires atomic initialization".into(),
+                gas_used: 0,
+                failed_contract: address,
+            });
+        }
         let mut transaction = match self.state.begin_transaction() {
             Ok(transaction) => transaction,
             Err(message) => return DeployOutcome::Failure(state_failure(message, 0, address)),

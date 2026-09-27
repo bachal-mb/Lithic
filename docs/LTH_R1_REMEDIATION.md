@@ -8,10 +8,10 @@ activation, LAX or production deployment is authorized.
 
 | Finding | Remediation / remaining evidence |
 | --- | --- |
-| LTH-01 | Propose caller-bound salt policy for the public factory; test two senders with the same salt. Do not silently change the approved child-address identity. |
+| LTH-01 | Alex's remediation approval relayed by user on 2026-09-27. Host now derives effective salt from domain tag, immediate caller and user salt. Two-user FinanceFactory ownership/collision and receipt-reconstruction tests pass locally; independent retest remains open. |
 | LTH-02 | Candidate clamp forwards min(EVM frame gas, 10M) to Rust while charging actual work. Regression first failed at 10M+1/15M/30M with FFI code 2 and zero gas left; passes after clamp. Keeper boundary and RPC-facing EstimateGas tests pass locally (details below); HTTP JSON-RPC/Makalu and independent retest remain outstanding. FFI's direct-request safety cap remains intact. |
 | LTH-03 | Open: derive and benchmark storage/log pricing and meter reads before work. No production gas schedule is approved; do not infer that matching SSTORE alone closes this. |
-| LTH-04 | Require atomic initialization for programs declaring initialize, or authenticate initialization using deployment identity; add takeover regression. |
+| LTH-04 | Approved atomic-initialization policy implemented for top-level and child deployment. Missing/wrong entrypoints fail without publication; FinanceFactory takeover, FFI rejection and existing rollback/recovery regressions pass locally. Independent retest remains open. |
 | LTH-05 | Four Rust guard tests added; independently disabling M4, M5, M6 and M8 makes each corresponding test fail. Guards restored; independent auditor retest still required. |
 | LTH-06 | After code fixes, freeze one Lithic commit and rerun FFI/Go/keeper evidence at that pin; update overlay and immutable handoff links together. |
 | LTH-07 | Build next package on Linux with forward-slash paths and Git bundles; verify raw blobs and git fsck. Preserve R1 archive unchanged. |
@@ -71,21 +71,54 @@ it isolates the aggregate limit from record-count and per-record limits. It
 does not claim end-to-end contract execution producing that batch. The hash
 test starts from a valid stored contract and changes only its stored hash.
 
-## Required chain-owner decisions before profile changes
+## Chain-owner decisions and scope
 
-1. Approve caller-bound public-factory salt derivation. Recommended policy:
+The user reports Alex confirmed points 1 and 2 on 2026-09-27. The client identifies
+Lithosphere Foundation as chain owner. No numerical gas schedule, named technical
+approver, security acceptance, deployment or activation approval is inferred.
+
+1. Approved caller-bound public-factory salt derivation:
    derive an effective salt from a domain tag, authenticated immediate caller
    and user salt, before the existing child-address derivation. This changes
    predicted factory addresses and requires matching SDK/frontend calculation.
-2. Approve rejecting deployment without atomic initialization for contracts
+2. Approved rejecting deployment without atomic initialization for contracts
    declaring `initialize`. This is the auditor's alternative to storing a
    deployer identity. It changes the currently allowed zero-initializer profile;
    templates declaring initialize must also be initialized atomically.
-3. Name the chain owner to approve gas economics and state lifecycle: baseline
+3. Remaining: prepare benchmark-backed pricing for Foundation's technical approval;
+   identify the authorized technical sign-off contact. Baseline
    native KV charges against the pinned SDK KVGasConfig, log charges against
    EVM LOG economics, and explicit persistent-state-growth charges. Numerical
    values must be backed by benchmarks and approved before registration.
 
-These are requests to define the remediation candidate, not requests to deploy
+These decisions define the remediation candidate, not permission to deploy
 or activate it. LTH-06 source repinning and LTH-07 replacement packaging should
 follow the profile fixes, not freeze another incomplete audit submission.
+
+## Approved-profile regression evidence
+
+`cargo +1.96.0 test --locked -p lithovm-host --test approved_profile` first
+failed both original regressions: accepted missing initialization and copied salt
+blocked the victim. After the fix, the suite also covers a bool-returning bypass
+selector, actual FinanceFactory takeover rejection and indexer reconstruction.
+The existing FinanceFactory/token test now checks two users sharing salt 0 and
+the second user's ownership, plus same-caller collision and unchanged state.
+
+Full Rust workspace tests and Clippy with warnings denied pass. The tagged native
+Go suite passes against the rebuilt FFI, including omitted/bypassed initialization
+and StateDB creation rollback. The full tagged Evmos keeper suite also passes
+locally (22.262s), including the prior signed-message/estimation regressions,
+against chain-lab commit `45d051dc1fe2f0e9e585b09be50c1df80ec99e24`.
+This is not HTTP RPC, Makalu, independent retesting or chain acceptance.
+The child-creation fuzz harness now initializes
+its template atomically and predicts with the caller-bound salt. A local seeded
+run (`cargo +nightly fuzz run child_creation -- -max_total_time=30
+-seed=20260927 -max_len=64`) completed 11,828 executions in 31 seconds, no failure.
+This is a short regression campaign, not production fuzz coverage or audit closure.
+The fuzz lockfile was refreshed to include the VM's existing serde dependencies.
+
+The Rust `caller_bound_salt` helper and creation/receipt docs define prediction.
+No native child-address prediction implementation currently exists in the Finance
+frontend service: native submission still fails closed. Its six service tests
+pass unchanged. Future native frontend wiring must use the effective salt and
+must not bind it twice. No Finance production deployment was changed.

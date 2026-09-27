@@ -26,7 +26,11 @@ Selectors inside the payload are full Keccak-256 digests of canonical native
 function signatures; the EVM method IDs are the usual first four digest bytes.
 `nativeArgs` and `nativeResult` use the existing versioned LithoVM value codec.
 A zero initializer selector means no initializer and requires empty native
-arguments. A zero call selector is rejected. ABI decoding is strict: re-encode
+arguments; it is allowed only when the program does not declare `initialize`.
+Programs declaring it must atomically execute that entrypoint, including templates.
+This remediation profile was confirmed by Alex, as relayed on 2026-09-27;
+it is not chain activation or gas-schedule approval.
+A zero call selector is rejected. ABI decoding is strict: re-encode
 must equal the entire submitted input, so aliases/trailing bytes are rejected.
 The Rust FFI JSON request is internal to the Go/Rust seam, not a wallet ABI.
 
@@ -70,7 +74,9 @@ Native child failure aborts the whole native operation and returns EVM revert;
 no partial native writes, logs or child code are applied. Successful writes are
 staged in Evmos StateDB and revert with an enclosing EVM snapshot. Top-level
 creation still uses the host's chain-domain/nonce address rule; child creation
-uses the confirmed creator/salt/code-hash rule. Salt reservation/front-running
+uses the creator/effective-salt/code-hash rule. The effective salt binds the user
+salt to the immediate authenticated caller with `LITHOVM_CALLER_SALT_V1` domain
+separation; see [creation profile](LITHOVM_CREATION_V14.md). Router namespace
 policy and collisions with all EVM/module identities remain to be reviewed.
 
 The lab's deliberately provisional gas formula is `500 + 4 × ABI input bytes`

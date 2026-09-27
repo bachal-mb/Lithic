@@ -2,8 +2,8 @@ use lithic_lithovm::compile;
 use lithovm::{ExecutionContext, ExecutionOutcome, FailureKind, Storage, Vm};
 use lithovm_bytecode::{function_selector, parse, values::Value, ValueType};
 use lithovm_host::{
-    child_contract_address, code_hash, CallRequest, DeployOutcome, DeployRequest, HostFailureKind,
-    HostOutcome, InMemoryState, Initializer, TransactionalHost,
+    caller_bound_salt, child_contract_address, code_hash, CallRequest, DeployOutcome,
+    DeployRequest, HostFailureKind, HostOutcome, InMemoryState, Initializer, TransactionalHost,
 };
 
 fn word(n: u64) -> [u8; 32] {
@@ -62,6 +62,12 @@ fn deploy(
     };
     result.contract
 }
+fn child_init() -> Option<Initializer<Value>> {
+    Some(Initializer {
+        function: "initialize".into(),
+        arguments: vec![value(ValueType::Bool, 1)],
+    })
+}
 const CHILD: &str = "contract Child { state { creator: address; amount: u256; } event Initialized { creator: address } pub fn initialize(accept: bool) -> bool { self.creator = msg.sender; self.amount = msg.value; emit Initialized { creator: msg.sender }; return accept; } pub fn creator() -> address { return self.creator; } }";
 const FACTORY: &str = "contract Factory { state { last: address; } event Created { child: address } pub fn create(template: address, salt: bytes32, initializer: bytes32, child_accept: bool, parent_accept: bool) -> address { let child: address = create_contract(template, salt, initializer, 5, child_accept); self.last = child; emit Created { child: child }; require(parent_accept); return child; } }";
 fn create(
@@ -88,12 +94,17 @@ fn create(
 fn creation_is_atomic_metered_prefunding_safe_and_collision_resistant() {
     let mut host = TransactionalHost::new(InMemoryState::default());
     let code = bytes(CHILD);
-    let template = deploy(&mut host, code.clone(), 0, None);
+    let template = deploy(&mut host, code.clone(), 0, child_init());
     let factory_code = bytes(FACTORY);
     assert_eq!(factory_code[7], 14);
     let factory = deploy(&mut host, factory_code, 1, None);
     host.state_mut().set_balance(factory, word(10));
-    let child = child_contract_address(factory, word(17), code_hash(&code), 700777);
+    let child = child_contract_address(
+        factory,
+        caller_bound_salt(word(9), word(17)),
+        code_hash(&code),
+        700777,
+    );
     host.state_mut().set_balance(child, word(3));
     let before = host.state().clone();
     for (child_accept, parent_accept) in [(0, 1), (1, 0)] {
@@ -127,7 +138,7 @@ fn creation_is_atomic_metered_prefunding_safe_and_collision_resistant() {
         registration.origin,
         lithovm_host::DeploymentOrigin::Child {
             template,
-            salt: word(17)
+            salt: caller_bound_salt(word(9), word(17))
         }
     );
     let statuses = lithovm_host::deployment_status::included(
@@ -190,15 +201,30 @@ fn creation_is_atomic_metered_prefunding_safe_and_collision_resistant() {
     ));
     assert_ne!(
         child,
-        child_contract_address(factory, word(18), code_hash(&code), 700777)
+        child_contract_address(
+            factory,
+            caller_bound_salt(word(9), word(18)),
+            code_hash(&code),
+            700777
+        )
     );
     assert_ne!(
         child,
-        child_contract_address(word(10), word(17), code_hash(&code), 700777)
+        child_contract_address(
+            word(10),
+            caller_bound_salt(word(9), word(17)),
+            code_hash(&code),
+            700777
+        )
     );
     assert_ne!(
         child,
-        child_contract_address(factory, word(17), code_hash(&code), 9005)
+        child_contract_address(
+            factory,
+            caller_bound_salt(word(9), word(17)),
+            code_hash(&code),
+            9005
+        )
     );
 }
 
@@ -260,7 +286,12 @@ fn finance_factory_initializes_fresh_children_for_all_feature_profiles() {
         };
         assert_eq!(
             child,
-            child_contract_address(factory, word(flags), code_hash(&code), 700777)
+            child_contract_address(
+                factory,
+                caller_bound_salt(word(9), word(flags)),
+                code_hash(&code),
+                700777
+            )
         );
         let last = result.events.last().unwrap();
         assert_eq!(last.contract, factory);
@@ -304,6 +335,43 @@ fn finance_factory_initializes_fresh_children_for_all_feature_profiles() {
         panic!("count")
     };
     assert_eq!(count.result.return_value, value(ValueType::U64, 16));
+    // R1 H2 regression on the actual FinanceFactory/token artifacts: a second
+    // user can reuse salt 0 after the first user, without inheriting ownership.
+    let mut args = vec![
+        value(ValueType::Bytes32, 0),
+        Value::String("Other".into()),
+        Value::String("OTHER".into()),
+        value(ValueType::U64, 18),
+        value(ValueType::U256, 99),
+    ];
+    args.extend((0..4).map(|_| value(ValueType::Bool, 1)));
+    let mut request = call(factory, "create", args);
+    request.caller = word(100);
+    let HostOutcome::Success(other) = host.execute_values(request.clone()) else {
+        panic!("copied salt blocked second Finance user")
+    };
+    let Value::Word(ValueType::Address, child) = other.result.return_value else {
+        panic!("not address")
+    };
+    assert_eq!(
+        child,
+        child_contract_address(
+            factory,
+            caller_bound_salt(word(100), word(0)),
+            code_hash(&code),
+            700777
+        )
+    );
+    let HostOutcome::Success(owner) = host.execute_values(call(child, "owner", vec![])) else {
+        panic!("owner")
+    };
+    assert_eq!(owner.result.return_value, value(ValueType::Address, 100));
+    let before = host.state().clone();
+    assert!(matches!(
+        host.execute_values(request),
+        HostOutcome::Failure(_)
+    ));
+    assert_eq!(host.state(), &before);
 }
 
 #[test]
@@ -352,7 +420,7 @@ fn fabricated_contract_event_is_not_a_registration_and_record_limit_rolls_back()
     assert_eq!(result.events.len(), 1);
     assert!(result.deployments.is_empty());
     let template_code = bytes(CHILD);
-    let template = deploy(&mut host, template_code.clone(), 1, None);
+    let template = deploy(&mut host, template_code.clone(), 1, child_init());
     let mut source = String::from("contract Many {");
     for n in 0..65 {
         source.push_str(&format!("const S{n}: bytes32 = 0x{n:064x};"));
@@ -384,7 +452,7 @@ fn fabricated_contract_event_is_not_a_registration_and_record_limit_rolls_back()
 fn invalid_templates_initializers_balances_and_code_sizes_discard_creation() {
     let mut host = TransactionalHost::new(InMemoryState::default());
     let code = bytes(CHILD);
-    let template = deploy(&mut host, code.clone(), 0, None);
+    let template = deploy(&mut host, code.clone(), 0, child_init());
     let factory = deploy(&mut host, bytes(FACTORY), 1, None);
     host.state_mut().set_balance(factory, word(10));
     let before = host.state().clone();
@@ -412,7 +480,15 @@ fn invalid_templates_initializers_balances_and_code_sizes_discard_creation() {
     let mut invalid_args = create(factory, template, selector(&code, "initialize"), 1, 1);
     // A different child signature rejects the factory's bool argument.
     let wrong = bytes("contract Wrong { pub fn initialize(n: u64) -> bool { return true; } }");
-    let wrong_template = deploy(&mut host, wrong.clone(), 2, None);
+    let wrong_template = deploy(
+        &mut host,
+        wrong.clone(),
+        2,
+        Some(Initializer {
+            function: "initialize".into(),
+            arguments: vec![value(ValueType::U64, 0)],
+        }),
+    );
     invalid_args.arguments[0] = Value::Word(ValueType::Address, wrong_template);
     invalid_args.arguments[2] = Value::Word(ValueType::Bytes32, selector(&wrong, "initialize"));
     let before = host.state().clone();
@@ -444,7 +520,7 @@ fn invalid_templates_initializers_balances_and_code_sizes_discard_creation() {
     large.push('}');
     let large_code = bytes(&large);
     assert!(large_code.len() > lithovm_host::MAX_CHILD_CODE_BYTES);
-    let large_template = deploy(&mut host, large_code.clone(), 3, None);
+    let large_template = deploy(&mut host, large_code.clone(), 3, child_init());
     let before = host.state().clone();
     let HostOutcome::Failure(failure) = host.execute_values(create(
         factory,
@@ -463,7 +539,7 @@ fn invalid_templates_initializers_balances_and_code_sizes_discard_creation() {
 fn newly_created_child_can_be_called_and_top_level_deploy_rolls_back_both() {
     let mut host = TransactionalHost::new(InMemoryState::default());
     let code = bytes(CHILD);
-    let template = deploy(&mut host, code.clone(), 0, None);
+    let template = deploy(&mut host, code.clone(), 0, child_init());
     let factory_code = bytes("contract Factory { pub fn initialize(template: address, salt: bytes32, init: bytes32, getter: bytes32, accept: bool) -> address { let child: address = create_contract(template, salt, init, 0, true); let observed: address = invoke(child, getter, 0); require(accept); return observed; } }");
     let mut request = DeployRequest {
         deployer: word(9),
@@ -499,7 +575,12 @@ fn newly_created_child_can_be_called_and_top_level_deploy_rolls_back_both() {
         result.initializer_result.unwrap().return_value,
         Value::Word(ValueType::Address, result.contract)
     );
-    let child = child_contract_address(result.contract, word(1), code_hash(&code), 700777);
+    let child = child_contract_address(
+        result.contract,
+        caller_bound_salt(word(9), word(1)),
+        code_hash(&code),
+        700777,
+    );
     assert_eq!(result.deployments.len(), 2);
     assert_eq!(result.deployments[0].contract, result.contract);
     assert_eq!(result.deployments[1].contract, child);
