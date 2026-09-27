@@ -6,6 +6,13 @@ Reviewed submission: Lithic `32bf868`, Lithosphere overlay `511b63c`.
 All audit findings remain open until independent retest. No registration,
 activation, LAX or production deployment is authorized.
 
+Amir's technical review is recorded in [the response and evidence matrix](AMIR_GAS_REVIEW_RESPONSE.md):
+KV/log rates accepted for the disabled candidate; growth and 10M final policy
+deferred. Reviewed source `fcb2f47` directly descends from `a64703f` with identical
+native-chain implementation/tests. Final one-pin closure remains pending further
+engineering. Live height-pinned RPC reports consensus `max_gas=-1`; do not use
+the checked-in 100M as a verified live benchmark ceiling.
+
 | Finding | Remediation / remaining evidence |
 | --- | --- |
 | LTH-01 | Alex's remediation approval relayed by user on 2026-09-27. Host now derives effective salt from domain tag, immediate caller and user salt. Two-user FinanceFactory ownership/collision and receipt-reconstruction tests pass locally; independent retest remains open. |
@@ -86,11 +93,11 @@ or activation approval is inferred from those confirmations.
    declaring `initialize`. This is the auditor's alternative to storing a
    deployer identity. It changes the currently allowed zero-initializer profile;
    templates declaring initialize must also be initialized atomically.
-3. Remaining: review the [benchmarked pricing candidate](LTH_R1_GAS_SCHEDULE_PROPOSAL.md) for Foundation's technical approval;
-   @Amir Dev is the nominated technical sign-off contact. Baseline
-   native KV charges against the pinned SDK KVGasConfig, log charges against
-   EVM LOG economics, and explicit persistent-state-growth charges. Numerical
-   values must be backed by benchmarks and approved before registration.
+3. @Amir Dev accepts the candidate KV/log rates for disabled remediation only.
+   Final growth pricing and the 10M cap are deferred. Scalable per-key storage,
+   live fuel accounting and validator-class durable/full-block evidence remain
+   required before final economics or registration approval. See the recorded
+   review for workload sizes, measurements and outstanding operator inputs.
 
 These decisions define the remediation candidate, not permission to deploy
 or activate it. LTH-06 source repinning and LTH-07 replacement packaging should

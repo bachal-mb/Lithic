@@ -7,6 +7,13 @@ by the user. That nomination does not approve these numerical rates. LTH-03 rema
 Foundation technical review, representative validator tests and independent retest.
 No registration, activation, production contract or LAX deployment is authorized.
 
+Review update: Amir accepts KV and log rates for the disabled candidate only;
+growth pricing and the 10M cap remain deferred final policy, permitted for tests.
+The live RPC now reports consensus `max_gas=-1`, not the checked-in 100M.
+See [recorded review, ancestry and live observation](AMIR_GAS_REVIEW_RESPONSE.md)
+for the exact height, scope and required production evidence. Historical benchmark
+results below are unchanged and do not establish production affordability.
+
 ## Proposed schedule
 
 `integration/native-chain/gas_schedule.go` uses fixed, overflow-safe constants.
