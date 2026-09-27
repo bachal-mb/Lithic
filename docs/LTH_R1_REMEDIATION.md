@@ -9,7 +9,7 @@ activation, LAX or production deployment is authorized.
 | Finding | Remediation / remaining evidence |
 | --- | --- |
 | LTH-01 | Propose caller-bound salt policy for the public factory; test two senders with the same salt. Do not silently change the approved child-address identity. |
-| LTH-02 | Candidate clamp forwards min(EVM frame gas, 10M) to Rust while charging actual work. Regression first failed at 10M+1/15M/30M with FFI code 2 and zero gas left; passes after clamp. Add keeper boundary and actual estimateGas tests before requesting closure. FFI's direct-request safety cap remains intact. |
+| LTH-02 | Candidate clamp forwards min(EVM frame gas, 10M) to Rust while charging actual work. Regression first failed at 10M+1/15M/30M with FFI code 2 and zero gas left; passes after clamp. Keeper boundary and RPC-facing EstimateGas tests pass locally (details below); HTTP JSON-RPC/Makalu and independent retest remain outstanding. FFI's direct-request safety cap remains intact. |
 | LTH-03 | Open: derive and benchmark storage/log pricing and meter reads before work. No production gas schedule is approved; do not infer that matching SSTORE alone closes this. |
 | LTH-04 | Require atomic initialization for programs declaring initialize, or authenticate initialization using deployment identity; add takeover regression. |
 | LTH-05 | Add Rust tests that kill M4 stored-code-hash, M5 payable-balance, M6 aggregate-write-limit and M8 read-count mutants; rerun each mutation independently. |
@@ -32,3 +32,23 @@ The added EVM.Call test compares return bytes and gas consumed across 10M-1,
 an RPC estimateGas or Makalu test. The reviewer could not reproduce Go/fuzz
 campaigns in R1; vendor passes must remain distinguished from independent
 evidence. The review also recommends a dedicated compiler/VM audit round.
+
+## Keeper estimation follow-up
+
+Local chain-lab commit `45d051dc1fe2f0e9e585b09be50c1df80ec99e24`
+adds boundary and estimation checks to
+`TestLithoVMCandidateSignedDeploySimulationAndCommit`. The focused tagged
+keeper test and full tagged keeper suite pass with Lithic gas-clamp code at `22d9b78`:
+
+- Signed core messages at 10M-1, 10M, 10M+1, 15M and 30M preserve successful
+  output and do not burn the entire allowance.
+- Keeper `EstimateGas` (the RPC-facing method) succeeds at caps 10M, 30M and
+  50M, both with and without an explicit gas argument. Replaying its returned
+  gas estimate succeeds, and estimation does not persist the contract.
+- Keeper receipt gas includes Evmos's existing minimum-gas multiplier and is
+  therefore not constant as the transaction limit changes. This was not
+  modified. The bridge-level work charge remains constant for the same work.
+
+This is direct keeper invocation, not HTTP JSON-RPC or a Makalu broadcast.
+The chain overlay and final review bundle will be re-pinned together after
+the remaining remediations; the immutable R1 submission remains unchanged.
