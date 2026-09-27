@@ -3,9 +3,9 @@
 package nativechain
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
-	"math/bits"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,53 +57,43 @@ func ExecuteFrame(db *statedb.StateDB, key storetypes.StoreKey, frame *vm.Contra
 	request.ChainID = env.ChainID
 	request.BlockHeight = env.Height
 	request.BlockTimestamp = env.Timestamp
-	var readBytes uint64
-	response, err = Execute(request, func(k string) ([]byte, error) {
+	meter := frameMeter{frame: frame, remaining: request.GasLimit}
+	// Capture original records for delta accounting. No native write is applied
+	// until every charge and response validation below succeeds.
+	originals := make(map[string][]byte)
+	read := func(k string) ([]byte, error) {
+		if !validStateKey(k) {
+			return nil, errors.New("invalid state key")
+		}
+		// Pay lookup/key cost before database access. Value length is available
+		// only after Get, but its charge precedes return/allocation across FFI.
+		if err := meter.charge(gasCost(candidateReadFlat, candidateReadByte, uint64(len(k)))); err != nil {
+			return nil, err
+		}
 		value := ctx.KVStore(key).Get([]byte(k))
-		readBytes += uint64(len(value))
+		if err := meter.charge(gasCost(0, candidateReadByte, uint64(len(value)))); err != nil {
+			return nil, err
+		}
+		originals[k] = value
 		return value, nil
-	})
+	}
+	response, err = Execute(request, read)
+	if meter.exhausted {
+		return Response{}, vm.ErrOutOfGas
+	}
 	if err != nil {
 		_ = frame.UseGas(frame.Gas)
 		return Response{}, err
 	}
 	gas, _ := strconv.ParseUint(response.GasUsed, 10, 64)
-	writes, err := response.DecodedWrites()
-	if err != nil {
+	if err := meter.charge(gas); err != nil {
 		return Response{}, err
-	}
-	// Experimental copy pricing only, not a production consensus schedule.
-	var carry uint64
-	gas, carry = bits.Add64(gas, readBytes, 0)
-	if carry != 0 {
-		_ = frame.UseGas(frame.Gas)
-		return Response{}, vm.ErrOutOfGas
-	}
-	for k, v := range writes {
-		gas, carry = bits.Add64(gas, uint64(len(k)+len(v)), 0)
-		if carry != 0 {
-			_ = frame.UseGas(frame.Gas)
-			return Response{}, vm.ErrOutOfGas
-		}
-	}
-	logs, err := json.Marshal(struct{ Deployments, Events []json.RawMessage }{response.Deployments, response.Events})
-	if err != nil {
-		return Response{}, err
-	}
-	gas, carry = bits.Add64(gas, uint64(len(logs)), 0)
-	if carry != 0 {
-		_ = frame.UseGas(frame.Gas)
-		return Response{}, vm.ErrOutOfGas
-	}
-	if !frame.UseGas(gas) {
-		_ = frame.UseGas(frame.Gas)
-		return Response{}, vm.ErrOutOfGas
 	}
 	if !response.Success {
 		return response, vm.ErrExecutionReverted
 	}
-	if err := db.AddPrecompileFn(LabAddress, oldStore, oldEvents); err != nil {
-		db.RevertToSnapshot(snapshot)
+	writes, err := response.DecodedWrites()
+	if err != nil {
 		return Response{}, err
 	}
 	keys := make([]string, 0, len(writes))
@@ -112,7 +102,45 @@ func ExecuteFrame(db *statedb.StateDB, key storetypes.StoreKey, frame *vm.Contra
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		ctx.KVStore(key).Set([]byte(k), writes[k])
+		v := writes[k]
+		old, known := originals[k]
+		if !known {
+			old, err = read(k)
+			if err != nil {
+				return Response{}, err
+			}
+		}
+		if bytes.Equal(old, v) {
+			delete(writes, k) // The host returns whole records even for getters.
+			continue
+		}
+		var oldSize uint64
+		if old != nil {
+			oldSize = uint64(len(k) + len(old))
+		}
+		newSize := uint64(len(k) + len(v))
+		cost := gasSum(gasCost(candidateWriteFlat, candidateWriteByte, newSize), growthGas(oldSize, newSize))
+		if err := meter.charge(cost); err != nil {
+			return Response{}, err
+		}
+	}
+	logs, err := json.Marshal(struct{ Deployments, Events []json.RawMessage }{response.Deployments, response.Events})
+	if err != nil {
+		return Response{}, err
+	}
+	if len(response.Events) > 0 || len(response.Deployments) > 0 {
+		if err := meter.charge(gasCost(candidateLogFlat, candidateLogByte, uint64(len(logs)))); err != nil {
+			return Response{}, err
+		}
+	}
+	if err := db.AddPrecompileFn(LabAddress, oldStore, oldEvents); err != nil {
+		db.RevertToSnapshot(snapshot)
+		return Response{}, err
+	}
+	for _, k := range keys {
+		if v, changed := writes[k]; changed {
+			ctx.KVStore(key).Set([]byte(k), v)
+		}
 	}
 	if len(response.Events) > 0 || len(response.Deployments) > 0 {
 		db.AddLog(&ethtypes.Log{Address: LabAddress, Topics: []common.Hash{crypto.Keccak256Hash([]byte("LithoNativeLab(bytes)"))}, Data: logs})

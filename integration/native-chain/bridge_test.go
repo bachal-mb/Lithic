@@ -11,7 +11,7 @@ import (
 )
 
 func ptr(s string) *string { return &s }
-func fixture(t *testing.T, source string) string {
+func fixture(t testing.TB, source string) string {
 	t.Helper()
 	out, err := exec.Command("../../target/debug/lithc", "--emit", "lithovm", source).CombinedOutput()
 	if err != nil {
@@ -36,10 +36,10 @@ func args(numbers ...uint64) string {
 	}
 	return out
 }
-func request(t *testing.T) Request {
+func request(t testing.TB) Request {
 	return Request{Version: 1, Operation: "deploy", Caller: "0x0000000000000000000000000000000000000009", Bytecode: ptr(fixture(t, "testdata/counter.lithic")), Function: ptr("initialize"), Arguments: args(7), Nonce: 1, GasLimit: 1000000, ChainID: 700777, BlockHeight: 1, BlockTimestamp: 2}
 }
-func returnedAddress(t *testing.T, response Response) string {
+func returnedAddress(t testing.TB, response Response) string {
 	t.Helper()
 	bytes, err := hex.DecodeString(strings.TrimPrefix(response.Result, "0x"))
 	if err != nil || len(bytes) != 40 || bytes[7] != 4 {

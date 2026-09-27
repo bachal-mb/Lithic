@@ -32,7 +32,7 @@ var _ vm.PrecompiledContract = LabPrecompile{}
 func (LabPrecompile) Address() common.Address { return LabAddress }
 
 // Decode work is prepaid even for malformed input. ExecuteFrame separately
-// charges native execution and state/log copy. This is not an approved schedule.
+// charges native execution and candidate KV/growth/log pricing. Not approved.
 func (LabPrecompile) RequiredGas(input []byte) uint64 {
 	return 500 + 4*uint64(len(input))
 }

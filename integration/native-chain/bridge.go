@@ -3,7 +3,8 @@ package nativechain
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../packages/vm/lithovm-ffi/include
-#cgo LDFLAGS: -L${SRCDIR}/../../target/debug -llithovm_ffi -Wl,-rpath,${SRCDIR}/../../target/debug
+#cgo !lithovm_release LDFLAGS: -L${SRCDIR}/../../target/debug -llithovm_ffi -Wl,-rpath,${SRCDIR}/../../target/debug
+#cgo lithovm_release LDFLAGS: -L${SRCDIR}/../../target/release -llithovm_ffi -Wl,-rpath,${SRCDIR}/../../target/release
 #include "lithovm.h"
 extern intptr_t lithovmGoRead(uintptr_t, uint8_t *, size_t, uint8_t *, size_t);
 static int32_t executeGo(const uint8_t *input, size_t len, uintptr_t handle, LithoBuffer *output) {
@@ -56,6 +57,16 @@ type Response struct {
 }
 type Reader func(string) ([]byte, error)
 
+func validStateKey(key string) bool {
+	const prefix = "lithovm/v1/contracts/"
+	suffix := strings.TrimPrefix(key, prefix)
+	if !strings.HasPrefix(key, prefix) || len(suffix) != 40 || strings.ToLower(suffix) != suffix {
+		return false
+	}
+	_, err := hex.DecodeString(suffix)
+	return err == nil
+}
+
 //export lithovmGoRead
 func lithovmGoRead(handle C.uintptr_t, key *C.uint8_t, keyLen C.size_t, output *C.uint8_t, capacity C.size_t) (result C.intptr_t) {
 	result = -2
@@ -67,8 +78,12 @@ func lithovmGoRead(handle C.uintptr_t, key *C.uint8_t, keyLen C.size_t, output *
 	if keyLen == 0 || keyLen > 128 || capacity > MaxBytes {
 		return -2
 	}
+	stateKey := string(unsafe.Slice((*byte)(unsafe.Pointer(key)), int(keyLen)))
+	if !validStateKey(stateKey) {
+		return -2
+	}
 	read := cgo.Handle(handle).Value().(Reader)
-	value, err := read(string(unsafe.Slice((*byte)(unsafe.Pointer(key)), int(keyLen))))
+	value, err := read(stateKey)
 	if err != nil || len(value) > MaxBytes {
 		return -2
 	}
@@ -127,13 +142,8 @@ func (response Response) DecodedWrites() (map[string][]byte, error) {
 	}
 	writes := make(map[string][]byte)
 	for _, write := range response.Writes {
-		const prefix = "lithovm/v1/contracts/"
-		suffix := strings.TrimPrefix(write.Key, prefix)
-		if !strings.HasPrefix(write.Key, prefix) || len(suffix) != 40 || strings.ToLower(suffix) != suffix {
+		if !validStateKey(write.Key) {
 			return nil, errors.New("invalid state key")
-		}
-		if _, err := hex.DecodeString(suffix); err != nil {
-			return nil, err
 		}
 		if _, exists := writes[write.Key]; exists {
 			return nil, errors.New("duplicate state key")

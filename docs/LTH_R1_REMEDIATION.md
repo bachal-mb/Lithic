@@ -10,13 +10,13 @@ activation, LAX or production deployment is authorized.
 | --- | --- |
 | LTH-01 | Alex's remediation approval relayed by user on 2026-09-27. Host now derives effective salt from domain tag, immediate caller and user salt. Two-user FinanceFactory ownership/collision and receipt-reconstruction tests pass locally; independent retest remains open. |
 | LTH-02 | Candidate clamp forwards min(EVM frame gas, 10M) to Rust while charging actual work. Regression first failed at 10M+1/15M/30M with FFI code 2 and zero gas left; passes after clamp. Keeper boundary and RPC-facing EstimateGas tests pass locally (details below); HTTP JSON-RPC/Makalu and independent retest remain outstanding. FFI's direct-request safety cap remains intact. |
-| LTH-03 | Open: derive and benchmark storage/log pricing and meter reads before work. No production gas schedule is approved; do not infer that matching SSTORE alone closes this. |
+| LTH-03 | Disabled candidate implements pinned SDK KV rates, EVM LOG1 rates and proposed growth charges, with early read charging, unchanged-write suppression and rollback tests. Optimized local benchmark (5,400 calls) and keeper tests pass. [Proposal and limitations](LTH_R1_GAS_SCHEDULE_PROPOSAL.md): Foundation rates/budgets, validator-class benchmarking, shared live FFI fuel and independent retest remain outstanding; not closed. |
 | LTH-04 | Approved atomic-initialization policy implemented for top-level and child deployment. Missing/wrong entrypoints fail without publication; FinanceFactory takeover, FFI rejection and existing rollback/recovery regressions pass locally. Independent retest remains open. |
 | LTH-05 | Four Rust guard tests added; independently disabling M4, M5, M6 and M8 makes each corresponding test fail. Guards restored; independent auditor retest still required. |
 | LTH-06 | After code fixes, freeze one Lithic commit and rerun FFI/Go/keeper evidence at that pin; update overlay and immutable handoff links together. |
 | LTH-07 | Build next package on Linux with forward-slash paths and Git bundles; verify raw blobs and git fsck. Preserve R1 archive unchanged. |
 | LTH-08 | Carry explicit wallet fixture into L1 release evidence and require full keeper suite in the next candidate's release gate; do not rewrite frozen r1 artifacts. |
-| LTH-09 | Prefix-restrict reads; design separate native store and genesis/upgrade handling before registration. |
+| LTH-09 | Reads and writes now share canonical native-key validation, including the Go callback before invoking its Reader. Separate native store, per-key scalable persistence and genesis/upgrade handling remain open before registration. |
 
 LTH-02 regression command (Linux, Go 1.22.12, existing pinned SDK/Evmos lab
 replacements and built Rust FFI required):
@@ -85,7 +85,7 @@ approver, security acceptance, deployment or activation approval is inferred.
    declaring `initialize`. This is the auditor's alternative to storing a
    deployer identity. It changes the currently allowed zero-initializer profile;
    templates declaring initialize must also be initialized atomically.
-3. Remaining: prepare benchmark-backed pricing for Foundation's technical approval;
+3. Remaining: review the [benchmarked pricing candidate](LTH_R1_GAS_SCHEDULE_PROPOSAL.md) for Foundation's technical approval;
    identify the authorized technical sign-off contact. Baseline
    native KV charges against the pinned SDK KVGasConfig, log charges against
    EVM LOG economics, and explicit persistent-state-growth charges. Numerical

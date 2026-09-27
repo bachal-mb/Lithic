@@ -79,13 +79,17 @@ salt to the immediate authenticated caller with `LITHOVM_CALLER_SALT_V1` domain
 separation; see [creation profile](LITHOVM_CREATION_V14.md). Router namespace
 policy and collisions with all EVM/module identities remain to be reviewed.
 
-The lab's deliberately provisional gas formula is `500 + 4 × ABI input bytes`
-precharged before decode, plus native VM gas, state read bytes, write key/value
-bytes, and encoded log bytes. Input is bounded to 2 MiB; bytecode to 64 KiB;
-the Rust request gas cap is 10 million. This is a testable DoS guard, **not**
-the approved consensus schedule. Calldata/intrinsic charging, memory expansion,
-failed-write pricing, refunds and EVM forwarding need chain-owner review and
-benchmark evidence before registration. The test-only log is a candidate JSON
+The lab precharges `500 + 4 × ABI input bytes` before decode, then native VM gas
+plus the [LTH-R1 storage/log candidate](LTH_R1_GAS_SCHEDULE_PROPOSAL.md): pinned SDK
+KV read/write rates, a proposed persistent-growth floor and EVM LOG1 pricing for
+actual emitted bytes. Unchanged writebacks and absent logs have no Set/LOG charge.
+Input is bounded to 2 MiB; bytecode to 64 KiB; aggregate frame work is capped at
+10 million gas. These admission bounds do not guarantee affordable deployment.
+Read charges precede returning bytes across FFI; VM gas is reconciled after FFI
+returns, not through a single live shared fuel meter. This is **not** an approved
+consensus schedule. Validator-class full-block/durable-state benchmarks, state
+scalability, failure-work metering, gas economics and independent review remain
+required before registration. The test-only log is a candidate JSON
 deployment/event envelope, not a final indexed receipt schema.
 
 The [lab evidence](NATIVE_CHAIN_LAB_EVIDENCE_2026_09_26.md) covers canonical
