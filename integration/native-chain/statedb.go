@@ -23,6 +23,10 @@ var LabAddress = common.HexToAddress("0x000000000000000000000000000000000000f000
 
 type Environment struct{ ChainID, Height, Timestamp, Nonce uint64 }
 
+// Must match the Rust FFI execution safety limit. This caps native work, not
+// the enclosing EVM frame; unused EVM gas remains available to its caller.
+const nativeExecutionGasCap uint64 = 10_000_000
+
 // ExecuteFrame uses real Evmos cache/snapshot journalling. The environment must
 // come from consensus, not the request; this package provides no public RPC.
 func ExecuteFrame(db *statedb.StateDB, key storetypes.StoreKey, frame *vm.Contract, readOnly bool, env Environment, request Request) (response Response, err error) {
@@ -46,6 +50,9 @@ func ExecuteFrame(db *statedb.StateDB, key storetypes.StoreKey, frame *vm.Contra
 	oldEvents := ctx.EventManager().Events()
 	request.Caller = strings.ToLower(frame.Caller().Hex())
 	request.GasLimit = frame.Gas
+	if request.GasLimit > nativeExecutionGasCap {
+		request.GasLimit = nativeExecutionGasCap
+	}
 	request.Nonce = env.Nonce
 	request.ChainID = env.ChainID
 	request.BlockHeight = env.Height

@@ -22,6 +22,30 @@ import (
 // Only EVM account backing is minimal; SDK KV cache and StateDB journals are real.
 type keeper struct{}
 
+func TestFrameGasAboveNativeCapPreservesSuccessAndUnusedGas(t *testing.T) {
+	var used uint64
+	for _, budget := range []uint64{1000000, 9999999, 10000000, 10000001, 15000000, 30000000} {
+		t.Run(fmt.Sprint(budget), func(t *testing.T) {
+			key := storetypes.NewKVStoreKey("gas-cap")
+			ctx := testutil.DefaultContext(key, storetypes.NewTransientStoreKey("gas-cap-transient"))
+			db := statedb.New(ctx, keeper{}, statedb.NewEmptyTxConfig(common.Hash{}))
+			callFrame := frame(budget)
+			result, err := ExecuteFrame(db, key, callFrame, false,
+				Environment{ChainID: 700777, Height: 1, Timestamp: 2, Nonce: 1}, request(t))
+			if err != nil || !result.Success {
+				t.Fatalf("budget %d: error=%v success=%v remaining=%d", budget, err, result.Success, callFrame.Gas)
+			}
+			consumed := budget - callFrame.Gas
+			if used == 0 {
+				used = consumed
+			}
+			if consumed != used || callFrame.Gas == 0 {
+				t.Fatalf("gas must depend on work, not budget: used=%d expected=%d remaining=%d", consumed, used, callFrame.Gas)
+			}
+		})
+	}
+}
+
 func (keeper) GetAccount(sdk.Context, common.Address) *statedb.Account {
 	return statedb.NewEmptyAccount()
 }
@@ -187,6 +211,20 @@ func TestEphemeralEVMPrecompileCallAndOuterRevert(t *testing.T) {
 	output, left, err := evm.Call(caller, LabAddress, payload, 1000000, big.NewInt(0))
 	if err != nil || left >= 1000000 {
 		t.Fatalf("EVM precompile call: %v gas=%d", err, left)
+	}
+	baselineUsed := uint64(1000000) - left
+	for _, budget := range []uint64{9999999, 10000000, 10000001, 15000000, 30000000} {
+		// Each budget is a separate transaction, including the StateDB call counter.
+		probeCtx := testutil.DefaultContext(key, storetypes.NewTransientStoreKey("gas-probe"))
+		probeDB := statedb.New(probeCtx, keeper{}, statedb.NewEmptyTxConfig(common.Hash{}))
+		probe := vm.NewEVM(evm.Context, evm.TxContext, probeDB, params.AllEthashProtocolChanges, vm.Config{})
+		if err := RegisterLabForMessage(probe, key, message, big.NewInt(700777), true); err != nil {
+			t.Fatal(err)
+		}
+		observed, remaining, callErr := probe.Call(caller, LabAddress, payload, budget, big.NewInt(0))
+		if callErr != nil || string(observed) != string(output) || budget-remaining != baselineUsed {
+			t.Fatalf("EVM gas monotonicity budget=%d remaining=%d error=%v", budget, remaining, callErr)
+		}
 	}
 	nativeResult, err := DecodeGatewayResult(output)
 	if err != nil {
