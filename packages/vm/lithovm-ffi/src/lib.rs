@@ -469,6 +469,91 @@ pub unsafe extern "C" fn lithovm_free_v1(buffer: Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn state() -> CallbackState {
+        CallbackState {
+            read: absent,
+            context: 0,
+            committed: BTreeMap::new(),
+            read_bytes: std::cell::Cell::new(0),
+            read_count: std::cell::Cell::new(0),
+        }
+    }
+
+    fn contract() -> DeployedContract {
+        let artifact =
+            lithic_lithovm::compile("contract C { pub fn value() -> u64 { return 42; } }").unwrap();
+        let bytecode = decode(&artifact.bytecode).unwrap();
+        DeployedContract {
+            code_hash: code_hash(&bytecode),
+            bytecode,
+            storage: Storage::default(),
+            entrypoints: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn stored_hash_guard_rejects_well_formed_record() {
+        let mut state = state();
+        let mut tx = state.begin_transaction().unwrap();
+        let address = [1; 32];
+        tx.store_contract(address, contract()).unwrap();
+        assert!(tx.load_contract(&address).unwrap().is_some());
+        let mut record: Stored = serde_json::from_slice(&tx.writes[&key(&address)]).unwrap();
+        record.code_hash = hex(&[255; 32]);
+        tx.writes
+            .insert(key(&address), serde_json::to_vec(&record).unwrap());
+        assert_eq!(
+            tx.load_contract(&address).unwrap_err(),
+            "stored code hash mismatch"
+        );
+    }
+
+    #[test]
+    fn payable_guard_rejects_nonzero_balance_without_commit() {
+        let mut state = state();
+        let mut tx = state.begin_transaction().unwrap();
+        tx.store_balance([1; 32], [0; 32]).unwrap();
+        let mut balance = [0; 32];
+        balance[31] = 1;
+        assert_eq!(
+            tx.store_balance([1; 32], balance).unwrap_err(),
+            "payable operations disabled in chain harness"
+        );
+        assert!(tx.writes.is_empty());
+    }
+
+    #[test]
+    fn read_count_guard_rejects_257th_read() {
+        let state = state();
+        for _ in 0..256 {
+            assert_eq!(state.read(&key(&[1; 32])).unwrap(), None);
+        }
+        assert_eq!(
+            state.read(&key(&[1; 32])).unwrap_err(),
+            "state read count exceeds harness limit"
+        );
+    }
+
+    #[test]
+    fn aggregate_write_guard_accepts_limit_rejects_one_byte_over() {
+        let mut state = state();
+        let mut tx = state.begin_transaction().unwrap();
+        let address = [1; 32];
+        tx.store_contract(address, contract()).unwrap();
+        let record_size = tx.writes[&key(&address)].len();
+        // Model the serialized bytes already staged by earlier contract writes.
+        // Two records keep the independent record-count limit out of this test.
+        tx.writes
+            .insert(key(&[2; 32]), vec![0; MAX_BYTES / 3 - record_size]);
+        tx.store_contract(address, contract()).unwrap();
+        tx.writes.get_mut(&key(&[2; 32])).unwrap().push(0);
+        let before = tx.writes.clone();
+        assert_eq!(
+            tx.store_contract(address, contract()).unwrap_err(),
+            "state write exceeds harness limit"
+        );
+        assert_eq!(tx.writes, before);
+    }
     unsafe extern "C" fn absent(_: usize, _: *const u8, _: usize, _: *mut u8, _: usize) -> isize {
         -1
     }
