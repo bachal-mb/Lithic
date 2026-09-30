@@ -51,8 +51,10 @@ finite isolated workload envelope. The VPS resize became guest-visible at
 virtual disks totaling 350 GiB, with a 343 GiB ext4/LVM root filesystem.
 Provider confirmation is the only evidence of underlying NVMe backing because
 the guest presents QEMU virtual disks. The guest-size mismatch is resolved;
-the **350 GiB versus original 500 GB nomination** remains a storage-size
-variance for Foundation acceptance before final validator evidence.
+the **350 GiB versus original 500 GB nomination** is a recorded storage-size
+variance. Alex subsequently accepted the resized VPS for the isolated
+benchmark; this acceptance does not approve any benchmark result or final
+production gas/pricing policy.
 
 ## Independent destination checks
 

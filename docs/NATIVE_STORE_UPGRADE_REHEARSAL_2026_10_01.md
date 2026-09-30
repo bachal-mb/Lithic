@@ -81,9 +81,10 @@ gap.
 
 ## Open approvals and measurements
 
-Foundation must choose and approve the actual upgrade name/height, operator
-cutover and rollback runbook, and whether the isolated 13-vCPU/78-GB/350-GB
-VPS is acceptable against the nominated 500-GB storage class. Durable
+Foundation must choose and approve the actual upgrade name/height and operator
+cutover and rollback runbook. Alex has accepted the isolated
+13-vCPU/78-GB/350-GB VPS for benchmarking despite the original 500-GB
+nomination; this does not approve its results or final pricing. Durable
 1k/10k/100k holder and allowance workloads, full-block measurements through
 the live 100M block-gas ceiling, pricing policy, independent security retest
 and Makalu end-to-end tests remain outstanding. The test chain and lab upgrade

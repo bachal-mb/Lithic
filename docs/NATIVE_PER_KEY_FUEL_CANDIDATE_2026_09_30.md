@@ -93,6 +93,6 @@ independent audit or durable validator benchmark.
 Before a benchmark or release candidate: design and test a chain-approved store upgrade; measure
 1k/10k/100k holders and allowances on durable
 validator-class state;
-obtain Foundation acceptance of the 350 GiB storage variance and final
-pricing envelope; then seek independent security retesting and Makalu
+obtain Foundation approval of the final pricing envelope (Alex has accepted
+the 350 GiB isolated benchmark host); then seek independent security retesting and Makalu
 end-to-end approval. No production or LAX deployment is authorized.
