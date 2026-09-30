@@ -105,7 +105,10 @@ approval, or validator-class workload benchmark.
 
 ## Subsequent disabled engineering candidate
 
-The later [per-key state and shared live-fuel working candidate](NATIVE_PER_KEY_FUEL_CANDIDATE_2026_09_30.md)
-is separate from the hash-pinned baseline above. It passes isolated
-correctness tests but has not been frozen, independently retested, run with a
-durable native store or accepted as a production pricing/benchmark result.
+The later [per-key state and shared live-fuel candidate](NATIVE_PER_KEY_FUEL_CANDIDATE_2026_09_30.md)
+is separate from the hash-pinned baseline above. It passed isolated
+correctness tests and has not been independently retested or accepted as a
+production pricing/benchmark result.
+The subsequent [disk-backed token-state run](DURABLE_TOKEN_STATE_BENCH_2026_10_01.md)
+measures that later candidate through GoLevelDB/IAVL; it does not run the
+configured `lithod` binary or establish validator full-block acceptance.

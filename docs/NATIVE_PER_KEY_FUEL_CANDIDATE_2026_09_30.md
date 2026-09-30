@@ -90,9 +90,11 @@ binaries had not yet been built; both were built from the pinned Lithic source
 before the passing rerun. This is a source-pin conformance check, not an
 independent audit or durable validator benchmark.
 
-Before a benchmark or release candidate: design and test a chain-approved store upgrade; measure
-1k/10k/100k holders and allowances on durable
-validator-class state;
+The [disk-backed 1k/10k/100k token-state benchmark](DURABLE_TOKEN_STATE_BENCH_2026_10_01.md)
+now provides isolated GoLevelDB/IAVL evidence; it does not satisfy full-block
+validator acceptance. Before a release candidate: design and test a
+chain-approved store upgrade; run the remaining full-block and worst-case
+validator workloads;
 obtain Foundation approval of the final pricing envelope (Alex has accepted
 the 350 GiB isolated benchmark host); then seek independent security retesting and Makalu
 end-to-end approval. No production or LAX deployment is authorized.
