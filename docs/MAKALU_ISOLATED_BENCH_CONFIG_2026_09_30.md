@@ -112,3 +112,6 @@ production pricing/benchmark result.
 The subsequent [disk-backed token-state run](DURABLE_TOKEN_STATE_BENCH_2026_10_01.md)
 measures that later candidate through GoLevelDB/IAVL; it does not run the
 configured `lithod` binary or establish validator full-block acceptance.
+The [tagged disabled-candidate binary build](DISABLED_CANDIDATE_BINARY_2026_10_01.md)
+now clears the lab build prerequisite, but it was not started and is not the
+hash-matched live Makalu executable.
