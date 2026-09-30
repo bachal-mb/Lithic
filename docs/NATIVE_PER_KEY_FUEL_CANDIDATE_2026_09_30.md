@@ -68,8 +68,29 @@ clippy with `-D warnings`, and `gofmt -l` also passed. These
 are in-memory/isolated correctness checks, **not** durable full-block
 benchmarks or evidence of 10k/100k-holder affordability.
 
-Before a benchmark or release candidate: rerun all suites from exported
-hash-verified archives of both pins; design and test a chain-approved store upgrade; measure
+## Pinned archive rerun
+
+On the isolated VPS, fresh `git archive --format=tar.gz` exports were staged
+under `/var/lib/lithic-bench/source/pinned-20260930-v1`. SHA-256 was checked
+on the VPS before extraction:
+
+| Source pin | Archive SHA-256 |
+| --- | --- |
+| Lithic `7b91097fdc0d323335b8d0b0b30fb465fcdee5a6` (documentation descendant of implementation pin) | `4655b8c6b8ddd4d75869749ac765fc8f12e298933f9540ea82369742e22b768f` |
+| Evmos lab `24e674de1bd4150025562aa6e393a672736feb65` | `edb6ba11db884f93faa7e23c7413d5dc3e8b8bfbb4b61a9bad093ed6ab39844e` |
+| SDK lab `f2e6295b662fdb27ea33da1296c29588ccdaab42` | `f21aef4886bee1f10d71052ac144d0a270e6c28a0a135cfccee1cf222d3aa796` |
+
+From those extracted sources, `cargo build --locked -p lithovm-ffi -p lithc`
+passed. `go test -mod=mod -tags lithovm_chain_lab -count=1 .` passed in
+`integration/native-chain`; tagged and ordinary
+`go test -mod=mod -count=1 ./x/evm/keeper ./app` passed in the Evmos lab
+(tagged command additionally used `-tags lithovm_chain_lab`). The first Go
+attempt on the fresh archive failed only because the Rust FFI and compiler
+binaries had not yet been built; both were built from the pinned Lithic source
+before the passing rerun. This is a source-pin conformance check, not an
+independent audit or durable validator benchmark.
+
+Before a benchmark or release candidate: design and test a chain-approved store upgrade; measure
 1k/10k/100k holders and allowances on durable
 validator-class state;
 obtain Foundation acceptance of the 350 GiB storage variance and final
