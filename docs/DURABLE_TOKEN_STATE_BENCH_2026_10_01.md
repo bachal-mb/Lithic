@@ -76,11 +76,13 @@ instrumented DB counts are logical calls. LevelDB file-size deltas can be
 negative during compaction and must **not** be treated as logical state
 deletion; the key/value totals are the stable state-growth measure.
 
-Still required before Amir's production gas approval: deploy sizes 4/16/32
-KiB and the 64-KiB boundary; logs from small through maximum permitted
-envelopes; OOG/revert and maximum-state transitions; warm and true cold state;
-full blocks at multiple utilization levels through a Foundation-approved
-finite test envelope; crash/restart evidence; and p50/p95/p99 execution and
-durable commit time with CPU/RSS, DB operations and logical growth for those
-blocks. The coordinated native-store upgrade/rollback plan, independent
-security retest, final source pin and Makalu acceptance remain separate gates.
+The isolated deployment-size and log-envelope smoke cases are recorded in
+[the boundary candidate](DURABLE_BOUNDARY_CANDIDATE_2026_10_01.md). They do
+not close validator acceptance. Still required before Amir's production gas
+approval: full-block maximum-state transitions and OOG/revert cases; warm and
+true cold state; full blocks at multiple utilization levels through a
+Foundation-approved finite test envelope; crash/restart evidence; and
+p50/p95/p99 execution and durable commit time with CPU/RSS, DB operations and
+logical growth for those blocks. The coordinated native-store upgrade/rollback
+plan, independent security retest, final source pin and Makalu acceptance
+remain separate gates.
