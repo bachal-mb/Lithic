@@ -7,8 +7,12 @@ package nativechain
 #cgo lithovm_release LDFLAGS: -L${SRCDIR}/../../target/release -llithovm_ffi -Wl,-rpath,${SRCDIR}/../../target/release
 #include "lithovm.h"
 extern intptr_t lithovmGoRead(uintptr_t, uint8_t *, size_t, uint8_t *, size_t);
+extern int32_t lithovmGoCharge(uintptr_t, uint64_t);
 static int32_t executeGo(const uint8_t *input, size_t len, uintptr_t handle, LithoBuffer *output) {
     return lithovm_execute_v1(input, len, handle, (LithoRead)lithovmGoRead, output);
+}
+static int32_t executeGoMetered(const uint8_t *input, size_t len, uintptr_t handle, LithoBuffer *output) {
+    return lithovm_execute_v2(input, len, handle, (LithoRead)lithovmGoRead, (LithoCharge)lithovmGoCharge, output);
 }
 */
 import "C"
@@ -42,8 +46,9 @@ type Request struct {
 	BlockTimestamp uint64  `json:"block_timestamp"`
 }
 type Write struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key    string `json:"key"`
+	Value  string `json:"value,omitempty"`
+	Delete bool   `json:"delete,omitempty"`
 }
 type Response struct {
 	Success     bool              `json:"success"`
@@ -56,14 +61,43 @@ type Response struct {
 	Events      []json.RawMessage `json:"events"`
 }
 type Reader func(string) ([]byte, error)
+type Charger func(uint64) error
+
+type callbacks struct {
+	read   Reader
+	charge Charger
+}
 
 func validStateKey(key string) bool {
-	const prefix = "lithovm/v1/contracts/"
-	suffix := strings.TrimPrefix(key, prefix)
-	if !strings.HasPrefix(key, prefix) || len(suffix) != 40 || strings.ToLower(suffix) != suffix {
+	const recordPrefix = "lithovm/v1/contracts/"
+	if strings.HasPrefix(key, recordPrefix) {
+		return canonicalHex(key[len(recordPrefix):], 40)
+	}
+	const mapPrefix = "lithovm/v2/maps/"
+	if !strings.HasPrefix(key, mapPrefix) {
 		return false
 	}
-	_, err := hex.DecodeString(suffix)
+	parts := strings.Split(key[len(mapPrefix):], "/")
+	if len(parts) != 3 || !canonicalHex(parts[0], 40) || len(parts[1]) == 0 || len(parts[1]) > 255 || len(parts[2]) == 0 || len(parts[2]) > 64*64 || len(parts[2])%64 != 0 || !canonicalHex(parts[2], len(parts[2])) {
+		return false
+	}
+	first := parts[1][0]
+	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_') {
+		return false
+	}
+	for _, char := range parts[1] {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalHex(value string, length int) bool {
+	if len(value) != length || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
 	return err == nil
 }
 
@@ -75,15 +109,15 @@ func lithovmGoRead(handle C.uintptr_t, key *C.uint8_t, keyLen C.size_t, output *
 			result = -2
 		}
 	}()
-	if keyLen == 0 || keyLen > 128 || capacity > MaxBytes {
+	if keyLen == 0 || keyLen > 8192 || capacity > MaxBytes {
 		return -2
 	}
 	stateKey := string(unsafe.Slice((*byte)(unsafe.Pointer(key)), int(keyLen)))
 	if !validStateKey(stateKey) {
 		return -2
 	}
-	read := cgo.Handle(handle).Value().(Reader)
-	value, err := read(stateKey)
+	state := cgo.Handle(handle).Value().(callbacks)
+	value, err := state.read(stateKey)
 	if err != nil || len(value) > MaxBytes {
 		return -2
 	}
@@ -100,8 +134,35 @@ func lithovmGoRead(handle C.uintptr_t, key *C.uint8_t, keyLen C.size_t, output *
 	return C.intptr_t(len(value))
 }
 
+//export lithovmGoCharge
+func lithovmGoCharge(handle C.uintptr_t, amount C.uint64_t) (result C.int32_t) {
+	defer func() {
+		if recover() != nil {
+			result = 0
+		}
+	}()
+	state := cgo.Handle(handle).Value().(callbacks)
+	if state.charge == nil || state.charge(uint64(amount)) != nil {
+		return 0
+	}
+	return 1
+}
+
 // Execute never writes external state. The embedding EVM cache owns applying and reverting the batch.
 func Execute(request Request, read Reader) (Response, error) {
+	return execute(request, read, nil)
+}
+
+// ExecuteMetered charges every VM gas increment through the supplied live
+// sink. Database reads remain charged by the Reader before it returns data.
+func ExecuteMetered(request Request, read Reader, charge Charger) (Response, error) {
+	if charge == nil {
+		return Response{}, errors.New("fuel sink required")
+	}
+	return execute(request, read, charge)
+}
+
+func execute(request Request, read Reader, charge Charger) (Response, error) {
 	var response Response
 	if read == nil {
 		return response, errors.New("state reader required")
@@ -110,10 +171,15 @@ func Execute(request Request, read Reader) (Response, error) {
 	if err != nil || len(input) > MaxBytes {
 		return response, errors.New("invalid or oversized request")
 	}
-	handle := cgo.NewHandle(read)
+	handle := cgo.NewHandle(callbacks{read: read, charge: charge})
 	defer handle.Delete()
 	var output C.LithoBuffer
-	code := C.executeGo((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), C.uintptr_t(handle), &output)
+	var code C.int32_t
+	if charge == nil {
+		code = C.executeGo((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), C.uintptr_t(handle), &output)
+	} else {
+		code = C.executeGoMetered((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), C.uintptr_t(handle), &output)
+	}
 	if code != 0 {
 		return response, fmt.Errorf("native FFI rejected request: %d", code)
 	}
@@ -148,11 +214,18 @@ func (response Response) DecodedWrites() (map[string][]byte, error) {
 		if _, exists := writes[write.Key]; exists {
 			return nil, errors.New("duplicate state key")
 		}
+		if write.Delete {
+			if write.Value != "" || !strings.HasPrefix(write.Key, "lithovm/v2/maps/") {
+				return nil, errors.New("invalid state deletion")
+			}
+			writes[write.Key] = nil
+			continue
+		}
 		if !strings.HasPrefix(write.Value, "0x") {
 			return nil, errors.New("invalid state value")
 		}
 		value, err := hex.DecodeString(write.Value[2:])
-		if err != nil || len(value) > MaxBytes {
+		if err != nil || len(value) == 0 || len(value) > MaxBytes || (strings.HasPrefix(write.Key, "lithovm/v2/maps/") && len(value) != 32) {
 			return nil, errors.New("invalid state value")
 		}
 		writes[write.Key] = value

@@ -58,6 +58,7 @@ func ExecuteFrame(db *statedb.StateDB, key storetypes.StoreKey, frame *vm.Contra
 	request.BlockHeight = env.Height
 	request.BlockTimestamp = env.Timestamp
 	meter := frameMeter{frame: frame, remaining: request.GasLimit}
+	var nativeCharged uint64
 	// Capture original records for delta accounting. No native write is applied
 	// until every charge and response validation below succeeds.
 	originals := make(map[string][]byte)
@@ -77,7 +78,13 @@ func ExecuteFrame(db *statedb.StateDB, key storetypes.StoreKey, frame *vm.Contra
 		originals[k] = value
 		return value, nil
 	}
-	response, err = Execute(request, read)
+	response, err = ExecuteMetered(request, read, func(gas uint64) error {
+		if err := meter.charge(gas); err != nil {
+			return err
+		}
+		nativeCharged += gas // meter.charge bounds this by the 10M envelope.
+		return nil
+	})
 	if meter.exhausted {
 		return Response{}, vm.ErrOutOfGas
 	}
@@ -86,8 +93,8 @@ func ExecuteFrame(db *statedb.StateDB, key storetypes.StoreKey, frame *vm.Contra
 		return Response{}, err
 	}
 	gas, _ := strconv.ParseUint(response.GasUsed, 10, 64)
-	if err := meter.charge(gas); err != nil {
-		return Response{}, err
+	if response.Success && gas != nativeCharged {
+		return Response{}, errors.New("native live fuel/report mismatch")
 	}
 	if !response.Success {
 		return response, vm.ErrExecutionReverted
@@ -139,7 +146,11 @@ func ExecuteFrame(db *statedb.StateDB, key storetypes.StoreKey, frame *vm.Contra
 	}
 	for _, k := range keys {
 		if v, changed := writes[k]; changed {
-			ctx.KVStore(key).Set([]byte(k), v)
+			if v == nil {
+				ctx.KVStore(key).Delete([]byte(k))
+			} else {
+				ctx.KVStore(key).Set([]byte(k), v)
+			}
 		}
 	}
 	if len(response.Events) > 0 || len(response.Deployments) > 0 {

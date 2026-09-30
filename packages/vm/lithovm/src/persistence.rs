@@ -56,6 +56,7 @@ impl Storage {
                 .map(|(k, v)| (k, Arc::from(v)))
                 .collect(),
             maps: BTreeMap::new(),
+            map_reader: None,
         };
         for (name, keys, value) in snapshot.maps {
             if storage
@@ -73,6 +74,17 @@ impl Storage {
         }
         prepare_storage(program, &mut storage)?;
         Ok(storage)
+    }
+}
+
+impl Storage {
+    /// V2 contract metadata excludes map values; individual map keys are
+    /// persisted by the chain adapter and loaded only when accessed.
+    pub fn to_persisted_scalar_bytes(&self) -> Result<Vec<u8>> {
+        let mut scalars = self.clone();
+        scalars.maps.clear();
+        scalars.map_reader = None;
+        scalars.to_persisted_bytes()
     }
 }
 

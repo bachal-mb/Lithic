@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -109,6 +110,34 @@ func TestGoRustPersistenceFailureAndMalformedRequests(t *testing.T) {
 	}
 	if !reflect.DeepEqual(failed.Deployments, []json.RawMessage{}) {
 		t.Fatal("failed registration")
+	}
+}
+
+func TestLiveFuelCallbackMatchesNativeReportAndRejectsExhaustion(t *testing.T) {
+	req := request(t)
+	reader := func(string) ([]byte, error) { return nil, nil }
+	var charged uint64
+	result, err := ExecuteMetered(req, reader, func(amount uint64) error {
+		charged += amount
+		return nil
+	})
+	if err != nil || !result.Success {
+		t.Fatalf("metered deployment failed: %v %+v", err, result)
+	}
+	reported, err := strconv.ParseUint(result.GasUsed, 10, 64)
+	if err != nil || charged != reported || charged == 0 {
+		t.Fatalf("live charge %d differs from native report %d: %v", charged, reported, err)
+	}
+	remaining := charged - 1
+	failed, err := ExecuteMetered(req, reader, func(amount uint64) error {
+		if amount > remaining {
+			return fmt.Errorf("fuel exhausted")
+		}
+		remaining -= amount
+		return nil
+	})
+	if err != nil || failed.Success || len(failed.Writes) != 0 || len(failed.Deployments) != 0 {
+		t.Fatalf("exhaustion leaked effects: %v %+v", err, failed)
 	}
 }
 

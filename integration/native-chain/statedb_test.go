@@ -136,7 +136,69 @@ func TestRealStateDBFactoryChildAtomicRollback(t *testing.T) {
 		t.Fatal("child reload", err, observed)
 	}
 }
-func (keeper) GetState(sdk.Context, common.Address, common.Hash) common.Hash                   { return common.Hash{} }
+func (keeper) GetState(sdk.Context, common.Address, common.Hash) common.Hash { return common.Hash{} }
+
+func TestPerKeyMapReadYourWritesAcrossSynchronousFrames(t *testing.T) {
+	key := storetypes.NewKVStoreKey("map-relay")
+	ctx := testutil.DefaultContext(key, storetypes.NewTransientStoreKey("map-relay-t"))
+	env := Environment{ChainID: 700777, Height: 1, Timestamp: 2, Nonce: 1}
+	db := statedb.New(ctx, keeper{}, statedb.NewEmptyTxConfig(common.Hash{}))
+	deploy := func(source string, nonce uint64, initialize bool) string {
+		req := request(t)
+		req.Bytecode = ptr(fixture(t, source))
+		req.Function, req.Arguments = nil, args()
+		if initialize {
+			req.Function = ptr("initialize")
+		}
+		env.Nonce = nonce
+		result, err := ExecuteFrame(db, key, frame(10_000_000), false, env, req)
+		if err != nil || !result.Success {
+			t.Fatalf("deploy %s: %v %+v", source, err, result)
+		}
+		return returnedAddress(t, result)
+	}
+	child := deploy("testdata/storage_gas.lithic", 1, true)
+	relay := deploy("testdata/map_relay.lithic", 2, false)
+	if err := db.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	writeSelector := crypto.Keccak256Hash([]byte("write(address,u256)"))
+	readSelector := crypto.Keccak256Hash([]byte("read(address)"))
+	targetWord := strings.Repeat("0", 24) + strings.TrimPrefix(child, "0x")
+	mapKey := "lithovm/v2/maps/" + strings.TrimPrefix(child, "0x") + "/balances/" + fmt.Sprintf("%064x", 7)
+	req := request(t)
+	req.Operation, req.Bytecode, req.Contract, req.Function = "call", nil, &relay, ptr("run")
+	callArgs := func(accept bool) string {
+		flag := 0
+		if accept {
+			flag = 1
+		}
+		return fmt.Sprintf("0x4c56414c01000604%s05%x05%x04%064x02%064x03%064x", targetWord, writeSelector[:], readSelector[:], 7, 42, flag)
+	}
+	db = statedb.New(ctx, keeper{}, statedb.NewEmptyTxConfig(common.Hash{}))
+	outer := db.Snapshot()
+	req.Arguments = callArgs(false)
+	failed, err := ExecuteFrame(db, key, frame(10_000_000), false, env, req)
+	if err == nil || failed.Success || len(failed.Writes) != 0 {
+		t.Fatalf("failed relay leaked effects: %v %+v", err, failed)
+	}
+	db.RevertToSnapshot(outer)
+	if ctx.KVStore(key).Has([]byte(mapKey)) {
+		t.Fatal("failed relay persisted child map word")
+	}
+	db = statedb.New(ctx, keeper{}, statedb.NewEmptyTxConfig(common.Hash{}))
+	req.Arguments = callArgs(true)
+	success, err := ExecuteFrame(db, key, frame(10_000_000), false, env, req)
+	if err != nil || !success.Success || !strings.HasSuffix(success.Result, fmt.Sprintf("%064x", 42)) {
+		t.Fatalf("second child frame missed staged map value: %v %+v", err, success)
+	}
+	if err := db.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if value := ctx.KVStore(key).Get([]byte(mapKey)); len(value) != 32 || value[31] != 42 {
+		t.Fatalf("successful relay map value not durable: %x", value)
+	}
+}
 func (keeper) GetCode(sdk.Context, common.Hash) []byte                                         { return nil }
 func (keeper) ForEachStorage(sdk.Context, common.Address, func(common.Hash, common.Hash) bool) {}
 func (keeper) SetAccount(sdk.Context, common.Address, statedb.Account) error                   { return nil }

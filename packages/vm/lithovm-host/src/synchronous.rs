@@ -1,6 +1,7 @@
 use super::*;
 use lithovm::{
-    ExecutionHost, InvocationResult, NativeCreation, NativeInvocation, NativeTransfer, ValueCall,
+    charge_external_fuel, ExecutionHost, InvocationResult, NativeCreation, NativeInvocation,
+    NativeTransfer, ValueCall,
 };
 
 pub(super) fn execute<T: StateTransaction>(
@@ -88,9 +89,18 @@ impl<T: StateTransaction> Adapter<'_, T> {
         }
         let creation_gas = CHILD_CREATE_BASE_GAS + template.bytecode.len() as u64;
         if creation_gas > request.gas_limit {
+            charge_external_fuel(request.gas_limit);
             return Err(HostFailure {
                 kind: HostFailureKind::Vm(FailureKind::OutOfGas),
                 message: "out of gas creating child code".into(),
+                gas_used: request.gas_limit,
+                failed_contract: self.address,
+            });
+        }
+        if !charge_external_fuel(creation_gas) {
+            return Err(HostFailure {
+                kind: HostFailureKind::Vm(FailureKind::OutOfGas),
+                message: "host fuel exhausted creating child code".into(),
                 gas_used: request.gas_limit,
                 failed_contract: self.address,
             });

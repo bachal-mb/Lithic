@@ -5,10 +5,58 @@ use lithovm_bytecode::{
 };
 use lithovm_receipts::ReceiptV1;
 use lithovm_zk_verifier::{StubVerifier, ZkVerifier};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
+use std::rc::Rc;
 use std::sync::Arc;
 mod persistence;
+
+/// Scoped host fuel sink for the isolated chain adapter. Each VM charge is
+/// forwarded before the corresponding instruction/effect proceeds. The hook
+/// is thread-local because an FFI invocation is synchronous on its calling
+/// thread; nested contract frames share the same sink.
+#[derive(Clone, Copy)]
+struct FuelHook {
+    context: usize,
+    charge: unsafe extern "C" fn(usize, u64) -> i32,
+}
+
+thread_local! {
+    static FUEL_HOOK: Cell<Option<FuelHook>> = const { Cell::new(None) };
+}
+
+/// # Safety
+/// `context` and `charge` must remain valid for the entire synchronous call;
+/// the callback must not unwind or re-enter the same invocation.
+pub unsafe fn with_external_fuel<T>(
+    context: usize,
+    charge: unsafe extern "C" fn(usize, u64) -> i32,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<FuelHook>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FUEL_HOOK.set(self.0);
+        }
+    }
+    let previous = FUEL_HOOK.replace(Some(FuelHook { context, charge }));
+    let _restore = Restore(previous);
+    run()
+}
+
+/// Returns false only when the installed host sink rejects the charge.
+/// Host-only charges (such as child-code creation) use this directly; VM
+/// charges use GasMeter to keep local and external accounting in sync.
+pub fn charge_external_fuel(amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+    FUEL_HOOK.with(|hook| match hook.get() {
+        Some(hook) => unsafe { (hook.charge)(hook.context, amount) == 1 },
+        None => true,
+    })
+}
 
 /// Minimal LithoVM execution context (scaffold).
 pub struct Vm {
@@ -155,11 +203,56 @@ pub struct ExecutionContext {
     pub call_depth: u16,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Optional backend for lazily resolving map words. An absent key reads as zero.
+/// The backend must never retain a callback outside its enclosing transaction.
+pub trait MapReader: std::fmt::Debug {
+    fn read_map(
+        &self,
+        field: &str,
+        keys: &[[u8; 32]],
+    ) -> std::result::Result<Option<[u8; 32]>, String>;
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Storage {
     values: BTreeMap<String, [u8; 32]>,
     strings: BTreeMap<String, Arc<str>>,
     maps: BTreeMap<String, BTreeMap<Vec<[u8; 32]>, [u8; 32]>>,
+    map_reader: Option<Rc<dyn MapReader>>,
+}
+
+impl PartialEq for Storage {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values && self.strings == other.strings && self.maps == other.maps
+    }
+}
+impl Eq for Storage {}
+
+impl Storage {
+    pub fn attach_map_reader(&mut self, reader: Rc<dyn MapReader>) {
+        self.map_reader = Some(reader);
+    }
+
+    pub fn staged_map_entries(&self) -> Vec<(String, Vec<[u8; 32]>, [u8; 32])> {
+        self.maps
+            .iter()
+            .flat_map(|(field, entries)| {
+                entries
+                    .iter()
+                    .map(|(keys, word)| (field.clone(), keys.clone(), *word))
+            })
+            .collect()
+    }
+
+    fn resolve_map(&self, field: &str, keys: &[[u8; 32]]) -> Result<Option<[u8; 32]>> {
+        if let Some(word) = self.maps.get(field).and_then(|entries| entries.get(keys)) {
+            return Ok(Some(*word));
+        }
+        match &self.map_reader {
+            Some(reader) => reader.read_map(field, keys).map_err(anyhow::Error::msg),
+            None => Ok(None),
+        }
+    }
 }
 
 impl Storage {
@@ -435,6 +528,7 @@ impl Vm {
                     })
                     .sum::<u64>();
             if gas_limit < initial_cost {
+                charge_external_fuel(gas_limit);
                 gas_used = gas_limit;
                 return Err(ClassifiedFault::new(FailureKind::OutOfGas, "out of gas").into());
             }
@@ -595,12 +689,17 @@ fn execute_dynamic_program(
         .and_then(|gas| gas.checked_add(expression_cost))
         .ok_or_else(|| anyhow!("gas calculation overflow"))?;
     if gas_limit < gas_used {
+        charge_external_fuel(gas_limit);
         *observed_gas = gas_limit;
         return Err(ClassifiedFault::new(
             FailureKind::OutOfGas,
             format!("out of gas: requires {gas_used}, limit is {gas_limit}"),
         )
         .into());
+    }
+    if !charge_external_fuel(gas_used) {
+        *observed_gas = gas_limit;
+        return Err(ClassifiedFault::new(FailureKind::OutOfGas, "host fuel exhausted").into());
     }
     *observed_gas = gas_used;
     let mut environment = RuntimeEnvironment {
@@ -908,11 +1007,9 @@ fn evaluate_expression(
                 keys.reverse();
                 let word = environment
                     .storage
-                    .maps
-                    .get(&field.name)
-                    .and_then(|entries| entries.get(&keys))
-                    .copied()
+                    .resolve_map(&field.name, &keys)?
                     .unwrap_or([0; 32]);
+                validate_word(field.value_type, &word)?;
                 stack.push(StackValue::scalar(field.value_type, word));
             }
             Instruction::MessageSender => {
@@ -1042,12 +1139,34 @@ impl GasMeter {
             .checked_add(amount)
             .ok_or_else(|| anyhow!("gas calculation overflow"))?;
         if attempted > self.limit {
+            charge_external_fuel(self.limit - self.used);
             self.used = self.limit;
             return Err(ClassifiedFault::new(
                 FailureKind::OutOfGas,
                 format!("out of gas: attempted {attempted}, limit is {}", self.limit),
             )
             .into());
+        }
+        if !charge_external_fuel(amount) {
+            self.used = self.limit;
+            return Err(ClassifiedFault::new(FailureKind::OutOfGas, "host fuel exhausted").into());
+        }
+        self.used = attempted;
+        Ok(())
+    }
+
+    // Gas already debited by a synchronous child frame must still count
+    // against the caller's local limit, without debiting the host twice.
+    fn account_child(&mut self, amount: u64) -> Result<()> {
+        let attempted = self
+            .used
+            .checked_add(amount)
+            .ok_or_else(|| anyhow!("gas calculation overflow"))?;
+        if attempted > self.limit {
+            self.used = self.limit;
+            return Err(
+                ClassifiedFault::new(FailureKind::OutOfGas, "child exhausted caller gas").into(),
+            );
         }
         self.used = attempted;
         Ok(())
@@ -1163,11 +1282,11 @@ fn execute_block(
                     .ok_or_else(|| anyhow!("creation requires execution host"))?;
                 let returned = match host.create(request, environment.storage) {
                     Ok(result) => {
-                        meter.charge(result.gas_used)?;
+                        meter.account_child(result.gas_used)?;
                         result
                     }
                     Err(failure) => {
-                        meter.charge(failure.gas_used)?;
+                        meter.account_child(failure.gas_used)?;
                         return Err(ClassifiedFault::new(failure.kind, failure.message).into());
                     }
                 };
@@ -1233,11 +1352,11 @@ fn execute_block(
                     .ok_or_else(|| anyhow!("invoke requires an execution host"))?;
                 let returned = match host.invoke(request, environment.storage) {
                     Ok(result) => {
-                        meter.charge(result.gas_used)?;
+                        meter.account_child(result.gas_used)?;
                         result
                     }
                     Err(failure) => {
-                        meter.charge(failure.gas_used)?;
+                        meter.account_child(failure.gas_used)?;
                         return Err(ClassifiedFault::new(failure.kind, failure.message).into());
                     }
                 };
@@ -1717,6 +1836,48 @@ fn add_u256(left: [u8; 32], right: [u8; 32]) -> Option<[u8; 32]> {
 mod tests {
     use super::*;
     use lithovm_bytecode::{Function, Program};
+
+    unsafe extern "C" fn debit_test_fuel(context: usize, amount: u64) -> i32 {
+        let remaining = unsafe { &*(context as *const Cell<u64>) };
+        if amount > remaining.get() {
+            return 0;
+        }
+        remaining.set(remaining.get() - amount);
+        1
+    }
+
+    #[test]
+    fn scoped_live_fuel_rejects_before_execution_and_restores_on_exit() {
+        let bytes = Program {
+            storage: vec![],
+            maps: vec![],
+            events: vec![],
+            functions: vec![Function {
+                name: "answer".into(),
+                parameters: vec![],
+                return_type: ValueType::U64,
+                return_value: ReturnValue::Constant(u64_word(42)),
+            }],
+        }
+        .encode()
+        .unwrap();
+        let vm = Vm::default();
+        let remaining = Cell::new(BASE_CALL_GAS);
+        unsafe {
+            with_external_fuel(&remaining as *const _ as usize, debit_test_fuel, || {
+                assert!(vm.execute(&bytes, "answer", &[], 100).is_ok());
+            })
+        };
+        assert_eq!(remaining.get(), 0);
+        let remaining = Cell::new(BASE_CALL_GAS - 1);
+        unsafe {
+            with_external_fuel(&remaining as *const _ as usize, debit_test_fuel, || {
+                assert!(vm.execute(&bytes, "answer", &[], 100).is_err());
+            })
+        };
+        assert_eq!(remaining.get(), BASE_CALL_GAS - 1);
+        assert!(vm.execute(&bytes, "answer", &[], 100).is_ok());
+    }
 
     fn u64_word(value: u64) -> [u8; 32] {
         let mut word = [0u8; 32];
