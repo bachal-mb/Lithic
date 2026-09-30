@@ -49,7 +49,11 @@ a fresh isolated chain or explicitly approved state export; it is not a
 hot migration of preview whole-record state. Version-1 inline-map records
 remain rejected and would need a separate migration if ever encountered.
 
-The next gates are an upgrade/store-loader rehearsal with rollback and
+The [disabled store-loader rehearsal](NATIVE_STORE_UPGRADE_REHEARSAL_2026_10_01.md)
+now adds a height-gated lab plan and tests state preservation, but also
+demonstrates that an old binary can reopen the post-upgrade database; mixed-
+version operation remains unsafe. The next gates are a Foundation-reviewed
+coordinated cutover with pre-upgrade snapshot rollback and
 mixed-version protection, durable 1k/10k/100k holder and allowance
 benchmarks on approved hardware, final gas economics, independent security
 retesting, source pinning and Makalu end-to-end approval.
