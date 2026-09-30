@@ -38,6 +38,14 @@ the new native store. The SDK store loader alone does not make an old binary
 reject that database or prevent mixed-version block execution. The legacy
 reopen is recorded in the focused test, not represented as a protection.
 
+The exact cause is the pinned SDK `rootmulti.Store.loadVersion`: it builds the
+persisted `StoreInfo` map, then loads only keys in the binary's mounted
+`storesParams`. It does not reject a persisted store absent from that mounted
+set. `UpgradeStoreLoader` is called only by the new binary. Changing the new
+candidate or its SDK fork cannot retrofit a check into the already-deployed
+legacy executable. A new-binary-only guard would therefore be insufficient
+evidence of mixed-version protection.
+
 Consequently, the following must be part of a Foundation-reviewed plan before
 any Makalu candidate is scheduled:
 
@@ -45,6 +53,10 @@ any Makalu candidate is scheduled:
    verify all validators have the matching candidate and a tested halt/restart
    procedure before that height. No rolling mixed-version operation through the
    upgrade block.
+   If a pre-upgrade guard binary is chosen, it must be rolled out and verified
+   on **every** validator before the store-addition height; any still-running
+   older executable defeats that guard. This rollout is a separate approved
+   stage, not a property of the lab loader.
 2. Capture a restorable state snapshot **before** the upgrade height and
    rehearse restoration on the isolated chain. A post-upgrade database must not
    be handed to an old binary as a rollback strategy.
@@ -60,6 +72,12 @@ If Foundation cannot enforce the coordinated halt and pre-upgrade snapshot
 rollback boundary, this store-addition path should not be proposed. An
 alternative would require a separately designed version guard that existing
 validators can enforce; the present code does not supply one.
+
+The engineering task cannot honestly be marked complete merely by making the
+lab test green: the vulnerable behavior belongs to an immutable deployed
+binary, and the durable/networked rehearsal and Foundation cutover decision
+have not occurred. No live node or systemd service was changed to mask this
+gap.
 
 ## Open approvals and measurements
 
