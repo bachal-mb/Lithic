@@ -2,10 +2,11 @@
 
 Status: **disabled lab candidate only**. This work does not approve gateway
 registration, Makalu deployment, production pricing, LAX custody or activation.
-It was tested from a separate working copy based on Lithic `df2d4fe`, Evmos
-lab `45d051d` and SDK lab `f2e6295`; the Evmos native-store edit is now a
-local commit at `24e674de1bd4150025562aa6e393a672736feb65`. The combined candidate is not yet a frozen,
-independently retested release artifact.
+The implementation is pinned in local commits: Lithic
+`2d755aeed8b7fc4826b92a139b73030a02693c81` and Evmos lab
+`24e674de1bd4150025562aa6e393a672736feb65`, against SDK lab
+`f2e6295b662fdb27ea33da1296c29588ccdaab42`. These commits are not a
+published or independently retested release artifact.
 
 ## State layout and rollback
 
@@ -67,8 +68,8 @@ clippy with `-D warnings`, and `gofmt -l` also passed. These
 are in-memory/isolated correctness checks, **not** durable full-block
 benchmarks or evidence of 10k/100k-holder affordability.
 
-Before a benchmark or release candidate: rerun all suites after final source
-pinning; design and test a chain-approved store upgrade; measure
+Before a benchmark or release candidate: rerun all suites from exported
+hash-verified archives of both pins; design and test a chain-approved store upgrade; measure
 1k/10k/100k holders and allowances on durable
 validator-class state;
 obtain Foundation acceptance of the 350 GiB storage variance and final
