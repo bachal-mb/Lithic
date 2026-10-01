@@ -40,7 +40,7 @@ the ZIP digest was checked again when recording this response.
 No numerical change is necessary merely to record this review. Neither accepted
 KV/log rates nor deferred growth/cap decisions authorize production use.
 
-## Live configuration observation: checked-in 100M is not the live ceiling
+## Historical mainnet observation; later Makalu capture differs
 
 Read-only public RPC observations on 2026-09-27:
 
@@ -55,25 +55,31 @@ Read-only public RPC observations on 2026-09-27:
   (4,294,967,295) and block hash
   `0xebcd35c64d95fdcf46b8f5e3893963f46bfb15060856ea589ddd0e192d75179d`.
 
-The CometBFT response does not advertise a finite consensus gas ceiling. Its
+The **mainnet** CometBFT response does not advertise a finite consensus gas ceiling. Its
 `-1` and the EVM header's gasLimit are different fields; the EVM field is not
 proof of a finite consensus enforcement limit. These are single-endpoint RPC
 observations, not independently verified consensus proofs or fleet configuration.
-The earlier checked-in 100M figure must not be used as a live benchmark ceiling.
-Foundation/operator confirmation of enforced application/consensus limits and
-a finite isolated-test load envelope is now required. Do not change live limits
-or load-test the public/mainnet endpoint to obtain this evidence.
+This observation must not be used as Makalu's benchmark ceiling. On 2026-09-30,
+the [active Makalu validator capture](evidence/MAKALU_EFFECTIVE_LIMITS_CAPTURE_2026_09_30.md)
+measured consensus and EVM block gas at **100M** at height 16,237,322. That is
+single-node, point-in-time evidence, not proof of fleet-wide or additional
+application-side limits. A finite isolated-test load envelope still needs
+Foundation approval. Do not change live limits or load-test public RPC.
 
 ## Required production evidence matrix
 
-All rows below remain pending; WSL2/in-memory measurements do not satisfy them.
+These are the production acceptance rows. Subsequent isolated per-transaction
+work completed parts of deployment, persistent-state and log coverage, but no
+full-block validator acceptance row is closed; see the
+[durable state](DURABLE_TOKEN_STATE_BENCH_2026_10_01.md) and
+[boundary](DURABLE_BOUNDARY_CANDIDATE_2026_10_01.md) results.
 
 | Coverage | Required cases | Prerequisite/owner |
 | --- | --- | --- |
-| Deployment | 4, 16, 32 KiB and 64 KiB admission boundary; gas failure/recovery | Engineering fixtures; Foundation final limits |
-| Persistent token state | 1k, 10k, 100k holders; equivalent allowance sets; mixed state | Engineering per-key persistence first |
+| Deployment | 4, 16, 32 KiB and 64 KiB admission boundary; gas failure/recovery | Isolated boundary cases complete; 16 KiB and larger cannot deploy under the provisional 10M cap; final policy/full-block evidence pending |
+| Persistent token state | 1k, 10k, 100k holders; equivalent allowance sets; mixed state | Disabled per-key candidate and disk-backed per-transaction samples complete; validator full-block acceptance pending |
 | Operations | deploy, read, transfer/write, overwrite, growth, approve/allowance, mint/burn where applicable, maximum-size transitions, OOG/revert | Engineering correctness and workload harness |
-| Logs | Single/multi-event transactions; small and 4 KiB payloads; maximum allowed transaction/log envelope | Engineering boundary fixtures |
+| Logs | Single/multi-event transactions; small and 4 KiB payloads; maximum allowed transaction/log envelope | Isolated envelope cases complete; full-block maximum-log evidence pending |
 | Full blocks | Multiple utilization levels through an agreed enforced ceiling; warm/cold state, durable commits, long-lived state, maximum logs and worst-case failures | Foundation isolated validator-class environment and finite test envelope |
 | Measurements | p50/p95/p99 execution and durable commit time; CPU/RSS; DB reads/writes; persistent growth | Engineering instrumentation and operator runs |
 | Acceptance | Execution-time and persistent-growth budgets derived from validator evidence | Foundation technical approver |
@@ -84,13 +90,14 @@ review requirement, not a claim that our available WSL environment meets it.
 
 ## Next work and external inputs
 
-Engineering can continue shared live Go/Rust fuel accounting and scalable
-per-key/native-store lifecycle design without asking Amir to approve the same
-KV/log rates again. Independent retesting and final source alignment remain ours
-to prepare. The reviewed packet is historical evidence, not the final release pin.
+Engineering has since implemented disabled shared live fuel, per-key storage
+and a native-store upgrade lab candidate; these do not waive independent
+retesting or final source alignment. The reviewed packet is historical
+evidence, not the final release pin.
 
-Request from Foundation/operator: confirm effective live block limits and nominate
-an isolated validator-class benchmark environment/operator. Agree a finite test
-load envelope given the observed `max_gas=-1`; derive final time/growth budgets
-from measured results rather than inventing them. No production load test, chain
-configuration change, gateway activation or contract deployment is authorized.
+The active Makalu limit has been captured and Alex accepted the isolated
+13-vCPU/78-GB/350-GB host. The remaining Foundation decision is the
+[finite isolated full-block workload](ISOLATED_FULL_BLOCK_BENCHMARK_APPROVAL.md),
+followed by evidence-derived time/growth budgets and final pricing. No
+production load test, chain configuration change, gateway activation or
+contract deployment is authorized.

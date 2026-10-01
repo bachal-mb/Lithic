@@ -9,10 +9,12 @@ No registration, activation, production contract or LAX deployment is authorized
 
 Review update: Amir accepts KV and log rates for the disabled candidate only;
 growth pricing and the 10M cap remain deferred final policy, permitted for tests.
-The live RPC now reports consensus `max_gas=-1`, not the checked-in 100M.
-See [recorded review, ancestry and live observation](AMIR_GAS_REVIEW_RESPONSE.md)
-for the exact height, scope and required production evidence. Historical benchmark
-results below are unchanged and do not establish production affordability.
+The earlier `max_gas=-1` RPC observation was mainnet, not Makalu. A later
+[active-node Makalu capture](evidence/MAKALU_EFFECTIVE_LIMITS_CAPTURE_2026_09_30.md)
+measured 100M at height 16,237,322. See the
+[recorded review and ancestry](AMIR_GAS_REVIEW_RESPONSE.md) for the mainnet
+observation and scope. Historical benchmark results below are unchanged and do
+not establish production affordability.
 
 ## Proposed schedule
 
@@ -133,12 +135,13 @@ go test -mod=mod -tags=lithovm_chain_lab,lithovm_release -run='^$' \
    such code can deploy under this gas budget. Foundation must assess useful
    contract sizes and workloads before choosing final limits or serialization.
 4. **Validator envelope:** the checked-in Lithosphere genesis declares 100M
-   block gas (not independently verified as current live settings). Purely
+   block gas; the later active Makalu capture measured the same ceiling at
+   one height on one validator, but not fleet-wide application enforcement. Purely
    extrapolating these cached reads to 100M gives roughly one second of local
    execution, excluding all the unmeasured costs above. This is not headroom
    evidence. Obtain Foundation's validator-class test environment and accepted
    block-time/state-growth budgets; test full blocks, durable state, worst-case
    failed calls, maximum records/logs and long-lived map workloads.
 5. Independent reviewers must retest metering, failure paths and affordability,
-   including the cross-language fuel limitation. Keep release, registration,
+   including the later [shared live cross-language fuel candidate](NATIVE_PER_KEY_FUEL_CANDIDATE_2026_09_30.md). Keep release, registration,
    activation and live deployment gates closed while these remain outstanding.

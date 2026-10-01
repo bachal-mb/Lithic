@@ -41,6 +41,14 @@ benchmark cannot by itself approve that growth price/cap or the gap between
 admission and deployability. Foundation must review the results and set final
 execution-time, state-growth and pricing budgets separately.
 
+The read-only [pre-key safety preflight](../scripts/check-isolated-lithovm-bench.py)
+passed on the isolated VPS on 2026-10-01. It verified the candidate binary
+and synthetic config hashes recorded above, the distinct chain ID, the
+100M/21M ceilings, disabled public services, loopback-only P2P/RPC,
+zero configured peers and absence of key files. Its six focused checks and
+the four existing preparation checks pass locally. The preflight does not
+start a node, create synthetic validator keys, or establish workload approval.
+
 **Decision requested:** approve or amend this finite *isolated synthetic*
 workload and acknowledge that the tagged candidate binary differs from the
 live Makalu executable. This is not approval for Makalu registration,

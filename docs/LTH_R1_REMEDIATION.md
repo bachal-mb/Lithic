@@ -10,20 +10,23 @@ Amir's technical review is recorded in [the response and evidence matrix](AMIR_G
 KV/log rates accepted for the disabled candidate; growth and 10M final policy
 deferred. Reviewed source `fcb2f47` directly descends from `a64703f` with identical
 native-chain implementation/tests. Final one-pin closure remains pending further
-engineering. Live height-pinned RPC reports consensus `max_gas=-1`; do not use
-the checked-in 100M as a verified live benchmark ceiling.
+engineering. The earlier `max_gas=-1` observation was **mainnet** (chain
+`lithosphere_9005-1`), not Makalu. A later [read-only capture from the active
+Makalu validator](evidence/MAKALU_EFFECTIVE_LIMITS_CAPTURE_2026_09_30.md)
+measured a 100M consensus block-gas ceiling at height 16,237,322. It is
+single-node evidence; do not transpose either chain's limits to the other.
 
 | Finding | Remediation / remaining evidence |
 | --- | --- |
 | LTH-01 | Alex's remediation approval relayed by user on 2026-09-27. Host now derives effective salt from domain tag, immediate caller and user salt. Two-user FinanceFactory ownership/collision and receipt-reconstruction tests pass locally; independent retest remains open. |
 | LTH-02 | Candidate clamp forwards min(EVM frame gas, 10M) to Rust while charging actual work. Regression first failed at 10M+1/15M/30M with FFI code 2 and zero gas left; passes after clamp. Keeper boundary and RPC-facing EstimateGas tests pass locally (details below); HTTP JSON-RPC/Makalu and independent retest remain outstanding. FFI's direct-request safety cap remains intact. |
-| LTH-03 | Disabled candidate implements pinned SDK KV rates, EVM LOG1 rates and proposed growth charges, with early read charging, unchanged-write suppression and rollback tests. Optimized local benchmark (5,400 calls) and keeper tests pass. [Proposal and limitations](LTH_R1_GAS_SCHEDULE_PROPOSAL.md): Foundation rates/budgets, validator-class benchmarking, shared live FFI fuel and independent retest remain outstanding; not closed. |
+| LTH-03 | Disabled candidate implements pinned SDK KV rates, EVM LOG1 rates and proposed growth charges, with early read charging, unchanged-write suppression and rollback tests. Optimized local benchmark (5,400 calls) and keeper tests pass. [Shared live fuel and per-key state](NATIVE_PER_KEY_FUEL_CANDIDATE_2026_09_30.md), [durable state workloads](DURABLE_TOKEN_STATE_BENCH_2026_10_01.md), and [deploy/log boundaries](DURABLE_BOUNDARY_CANDIDATE_2026_10_01.md) now have isolated candidate evidence. Final growth/cap policy, full-block validator evidence and independent retest remain outstanding; not closed. |
 | LTH-04 | Approved atomic-initialization policy implemented for top-level and child deployment. Missing/wrong entrypoints fail without publication; FinanceFactory takeover, FFI rejection and existing rollback/recovery regressions pass locally. Independent retest remains open. |
 | LTH-05 | Four Rust guard tests added; independently disabling M4, M5, M6 and M8 makes each corresponding test fail. Guards restored; independent auditor retest still required. |
 | LTH-06 | After code fixes, freeze one Lithic commit and rerun FFI/Go/keeper evidence at that pin; update overlay and immutable handoff links together. |
 | LTH-07 | Build next package on Linux with forward-slash paths and Git bundles; verify raw blobs and git fsck. Preserve R1 archive unchanged. |
 | LTH-08 | Carry explicit wallet fixture into L1 release evidence and require full keeper suite in the next candidate's release gate; do not rewrite frozen r1 artifacts. |
-| LTH-09 | Reads and writes now share canonical native-key validation, including the Go callback before invoking its Reader. Separate native store, per-key scalable persistence and genesis/upgrade handling remain open before registration. |
+| LTH-09 | Reads and writes share canonical native-key validation, including the Go callback before invoking its Reader. A disabled separate-store/per-key candidate and [height-gated upgrade rehearsal](NATIVE_STORE_UPGRADE_REHEARSAL_2026_10_01.md) exist. Coordinated validator cutover, durable networked rollback/restart rehearsal, chain acceptance and independent retest remain open before registration. |
 
 LTH-02 regression command (Linux, Go 1.22.12, existing pinned SDK/Evmos lab
 replacements and built Rust FFI required):
