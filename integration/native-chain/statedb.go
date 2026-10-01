@@ -23,8 +23,11 @@ var LabAddress = common.HexToAddress("0x000000000000000000000000000000000000f000
 
 type Environment struct{ ChainID, Height, Timestamp, Nonce uint64 }
 
-// Must match the Rust FFI execution safety limit. This caps native work, not
-// the enclosing EVM frame; unused EVM gas remains available to its caller.
+// Must match the Rust FFI execution safety limit. Successful native calls
+// charge only work performed and leave unused EVM gas available. Exhausting
+// this envelope is an EVM out-of-gas failure: the enclosing call frame burns
+// its remaining gas, including gas above the native cap. This is deliberate
+// EVM failure semantics, not a promise that failed calls cost at most 10M.
 const nativeExecutionGasCap uint64 = 10_000_000
 
 // ExecuteFrame uses real Evmos cache/snapshot journalling. The environment must

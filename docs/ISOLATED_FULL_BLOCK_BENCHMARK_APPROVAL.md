@@ -1,6 +1,8 @@
 # Approval request: isolated native full-block benchmark
 
-Status: **proposed test envelope, not authorization to run or deploy**.
+Status: **approved with conditions for the finite isolated synthetic benchmark only**
+on 2026-10-01 by Amir Dev for Lithosphere Foundation. Results require a
+separate Foundation review. This is not production authorization.
 Technical approver: Amir Dev for Lithosphere Foundation. Host acceptance by
 Alex covers the isolated 13-vCPU/78-GB/350-GB VPS, not this workload or its
 results.
@@ -49,7 +51,12 @@ zero configured peers and absence of key files. Its six focused checks and
 the four existing preparation checks pass locally. The preflight does not
 start a node, create synthetic validator keys, or establish workload approval.
 
-**Decision requested:** approve or amend this finite *isolated synthetic*
-workload and acknowledge that the tagged candidate binary differs from the
-live Makalu executable. This is not approval for Makalu registration,
-activation, validator rollout, contract deployment, LAX, or production custody.
+The approval requires the tagged binary only on the isolated host, a distinct
+synthetic chain ID and keys, loopback-only P2P/RPC/services, no Makalu keys,
+state or peers, no production traffic or assets, no live consensus change,
+all listed workloads and measurements, and immediate stop on a ceiling
+violation, state divergence, unexpected process failure/restart or resource
+exhaustion. The tagged binary differs from the live Makalu executable.
+Approval does not establish a native gas cap, growth price, deployability
+policy, registration, activation, validator rollout, LAX, MultX, bridge or
+production custody permission.

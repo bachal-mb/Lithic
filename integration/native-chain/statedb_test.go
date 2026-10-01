@@ -264,8 +264,10 @@ func TestEphemeralEVMPrecompileCallAndOuterRevert(t *testing.T) {
 	}
 	caller := vm.AccountRef(common.HexToAddress("0x0000000000000000000000000000000000000009"))
 	wrapper := vm.AccountRef(common.HexToAddress("0x000000000000000000000000000000000000000a"))
-	if _, left, err := evm.Call(caller, LabAddress, []byte{1, 2, 3, 4}, 1000, big.NewInt(0)); err == nil || left != 0 {
-		t.Fatalf("malformed gateway input did not consume gas: %v %d", err, left)
+	for _, budget := range []uint64{1000, 30_000_000} {
+		if _, left, err := evm.Call(caller, LabAddress, []byte{1, 2, 3, 4}, budget, big.NewInt(0)); err == nil || left != 0 {
+			t.Fatalf("malformed gateway input did not consume EVM frame gas at %d: %v %d", budget, err, left)
+		}
 	}
 	if _, left, err := evm.Call(wrapper, LabAddress, payload, 1000000, big.NewInt(0)); err != vm.ErrExecutionReverted || left == 0 {
 		t.Fatalf("wrapper deployment was not rejected: %v %d", err, left)

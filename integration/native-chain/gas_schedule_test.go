@@ -59,6 +59,23 @@ func TestCandidateRatesMatchPinnedBaselinesAndDoNotOverflow(t *testing.T) {
 	}
 }
 
+func TestNativeEnvelopeExhaustionBurnsEVMFrame(t *testing.T) {
+	// Evmos EVM.Call zeroes remaining gas on any non-REVERT error. Keep
+	// the bridge's direct-frame behavior aligned with that boundary: a
+	// 10M native cap is not a partial-gas refund for an OOG transaction.
+	f := frame(30_000_000)
+	meter := frameMeter{frame: f, remaining: nativeExecutionGasCap}
+	if err := meter.charge(nativeExecutionGasCap); err != nil {
+		t.Fatal(err)
+	}
+	if f.Gas != 20_000_000 || meter.remaining != 0 {
+		t.Fatalf("unexpected gas before cap exhaustion: frame=%d native=%d", f.Gas, meter.remaining)
+	}
+	if err := meter.charge(1); !errors.Is(err, vm.ErrOutOfGas) || f.Gas != 0 || !meter.exhausted {
+		t.Fatalf("native envelope must fail as EVM OOG and burn frame: err=%v gas=%d", err, f.Gas)
+	}
+}
+
 func TestExactDeploymentGasBoundaryAndNoEffectsOnExhaustion(t *testing.T) {
 	req := request(t)
 	var exact uint64
