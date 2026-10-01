@@ -50,8 +50,8 @@ class PackageTests(unittest.TestCase):
             names = archive.namelist()
             self.assertEqual(names, sorted(names))
             self.assertTrue(all("\\" not in name for name in names))
-            self.assertNotIn("source/evmos/scripts/.env", names)
-            self.assertEqual(archive.read("source/lithic/source.txt").replace(b"\r\n", b"\n"), b"lithic\n")
+            self.assertNotIn("source/litho-native-chain-lab/scripts/.env", names)
+            self.assertEqual(archive.read("source/lithic-toolchain/source.txt").replace(b"\r\n", b"\n"), b"lithic\n")
             for line in archive.read("CHECKSUMS.sha256").decode().splitlines():
                 digest, name = line.split("  ", 1)
                 self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(), digest)

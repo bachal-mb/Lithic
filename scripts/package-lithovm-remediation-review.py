@@ -18,6 +18,11 @@ import zipfile
 
 DATE_TIME = (2026, 10, 1, 0, 0, 0)
 SOURCES = ("lithic", "evmos", "sdk")
+SOURCE_DIRS = {
+    "lithic": "lithic-toolchain",
+    "evmos": "litho-native-chain-lab",
+    "sdk": "litho-native-sdk-lab",
+}
 KNOWN_EXCLUSION = ("evmos", "scripts/.env")
 SENSITIVE_PATH = re.compile(r"(^|/)(\.env(?:$|\.)|id_rsa$|priv_validator_key\.json$|node_key\.json$)", re.I)
 
@@ -72,15 +77,17 @@ Exact source commits (not mutable PR branch names):
   `eca13ef2521a9ef13c32e80b1b147230bdb155b5`.
 - Cosmos SDK lab dependency: `{commits['sdk']}`.
 
-`source/lithic`, `source/evmos` and `source/sdk` are Git-archive snapshots of
-those commits. The upstream Evmos `scripts/.env` is intentionally excluded;
+`source/lithic-toolchain`, `source/litho-native-chain-lab` and
+`source/litho-native-sdk-lab` are Git-archive snapshots of those commits. The
+directory names preserve the pinned Go module's relative local replacements.
+The upstream Evmos `scripts/.env` is intentionally excluded;
 no working-tree modifications or binaries are included. All ZIP names use
 forward slashes. Check `CHECKSUMS.sha256` and `SOURCE_COMMITS.json` before
 review. The Lithic and Evmos source may be compared with the draft PRs, but
 the listed commits, not current PR heads, define this snapshot.
 
 Review LTH-01 through LTH-09 against the included
-`source/lithic/docs/LTH_R1_REMEDIATION.md`. Local regression evidence covers
+`source/lithic-toolchain/docs/LTH_R1_REMEDIATION.md`. Local regression evidence covers
 caller-bound salts, mandatory atomic initialization, >10M gas clamp,
 FFI mutation guards, shared live fuel, scalable per-key state, and the
 disabled native-store upgrade rehearsal. Reproduce Rust workspace tests and
@@ -95,7 +102,7 @@ cannot deploy under that provisional cap; full-block validator evidence,
 networked store-upgrade rollback, Makalu deploy/call/failure/recovery,
 one-pin release/overlay alignment and signed release evidence remain pending.
 The isolated full-block workload requires the separate Foundation decision
-in `source/lithic/docs/ISOLATED_FULL_BLOCK_BENCHMARK_APPROVAL.md`.
+in `source/lithic-toolchain/docs/ISOLATED_FULL_BLOCK_BENCHMARK_APPROVAL.md`.
 
 Please return finding-by-finding reproduction and disposition, exact source
 commit pins, residual risks, and whether a further retest is required after
@@ -128,7 +135,7 @@ def package(output: Path, repositories: dict[str, Path], refs: dict[str, str]) -
                 continue
             if SENSITIVE_PATH.search(name):
                 raise RuntimeError(f"unexpected sensitive tracked path: {source}/{name}")
-            key = f"source/{source}/{name}"
+            key = f"source/{SOURCE_DIRS[source]}/{name}"
             if key in entries:
                 raise RuntimeError(f"duplicate archive entry: {key}")
             entries[key] = data
