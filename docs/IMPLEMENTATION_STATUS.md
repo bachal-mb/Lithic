@@ -2,16 +2,34 @@
 
 This repository contains a preview compiler backend plus development scaffolds. Its design documents describe intended capabilities; they do not establish production availability.
 
+For the latest standalone compiler/runtime release work and remaining gates,
+see the [25 October completion record](PRODUCTION_COMPLETION_2026_10_25.md).
+The capability descriptions below include historical candidate boundaries.
+Separate October Makalu activation evidence supersedes September statements
+about absent chain integration; it does not establish mainnet deployment or
+full language/standards conformance.
+
 | Tool | Current implementation |
 |---|---|
 | lithc | Parses/checks declarations and emits ABI plus executable EVM or versioned native LithoVM bytecode for the documented subset. Native v11 artifacts include compiler/target versions, exact source/code hashes and canonical full-hash entrypoint selectors. Unsupported semantics fail the complete build. |
 | lithovm-host | Transactional chain-state seam plus in-memory conformance adapter. Produces structured failure/gas outcomes, atomically executes call trees, and rejects reentrancy. Deployment v1 derives selectors from validated bytecode and adds code hashes, deterministic addresses, value transfer and optional initializer execution in one transaction. No Lithosphere persistence/RPC adapter is included. |
 | lithfmt | Parse-checked, literal-preserving whitespace normalization; supports --check. |
 | lithlint | Declaration-level naming and AI-budget rules; supports --deny-warnings. Not a security analyzer. |
-| lithdev | Placeholder shell entrypoint. No deployment execution. |
+| lithdev | Native source compilation, unsigned Makalu gateway deployment/call intent preparation, and strict ABI/LVAL result decoding. No wallet, signing, RPC or broadcast execution. See [usage](LITHDEV_NATIVE_PREPARATION.md). |
 | lithls, lithtest, lithsec, lithpkg | Specification-only targets. No usable implementations here. |
 
-The SDK compiler, formatter and linter wrappers invoke the Rust commands from this checkout. lithdev remains a placeholder. The native VM strictly decodes and executes [Native LithoVM ABI v11](LITHOVM_ABI_V11.md) and versions 1 through 10. Version 11 adds typed map storage and checked `u256` add/subtract/comparison. Version 10 adds explicit transactional `require` and `revert`. Versions 9 through 3 add bounded loops, mutable locals, staged calls, transfers, events, context and scalar storage. The [transactional host v1](LITHOVM_HOST_V1.md) retains deferred zero-argument legacy calls. Local v12/v13 candidates described below add dynamic values and synchronous typed calls. General collections, persisted consensus receipts and zk authorization remain unimplemented. The EVM target remains documented in [EVM backend v1](EVM_BACKEND_V1.md).
+The SDK compiler, formatter, linter and lithdev wrappers invoke the Rust commands
+from this checkout. The native VM strictly decodes and executes
+[Native LithoVM ABI v11](LITHOVM_ABI_V11.md) and versions 1 through 10. Version 11
+adds typed map storage and checked `u256` add/subtract/comparison. Version 10 adds
+explicit transactional `require` and `revert`. Versions 9 through 3 add bounded
+loops, mutable locals, staged calls, transfers, events, context and scalar
+storage. The [transactional host v1](LITHOVM_HOST_V1.md) retains deferred
+zero-argument legacy calls. Local v12/v13 candidates described below add dynamic
+values and synchronous typed calls. General collections and zk authorization
+remain unimplemented. Consensus receipts/finality require the separate chain
+adapter and evidence. The EVM target remains documented in
+[EVM backend v1](EVM_BACKEND_V1.md).
 
 ## Local development
 
