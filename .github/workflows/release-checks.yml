@@ -9,6 +9,9 @@ on:
       - "rust-toolchain.toml"
       - "packages/compiler/**"
       - "packages/vm/**"
+      - "packages/standards/lep100-tests/**"
+      - "sdk/contracts/standards/**"
+      - "scripts/generate_native_account_candidate.py"
       - "scripts/release_toolchain.py"
       - "scripts/tests/test_release_toolchain.py"
       - "sdk/tests/native-gateway-vectors.json"
@@ -28,7 +31,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:

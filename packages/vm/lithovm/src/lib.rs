@@ -1,15 +1,17 @@
 use anyhow::{anyhow, bail, Result};
-use lithovm_bytecode::values::{self, Value, MAX_STRING_BYTES};
+use lithovm_bytecode::values::{self, Value, MAX_BYTES_LENGTH, MAX_STRING_BYTES};
 use lithovm_bytecode::{
     parse, validate_word, Instruction, Program, ReturnValue, Statement, ValueType,
 };
 use lithovm_receipts::ReceiptV1;
 use lithovm_zk_verifier::{StubVerifier, ZkVerifier};
+use sha3::{Digest, Keccak256};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::rc::Rc;
 use std::sync::Arc;
+mod crypto;
 mod persistence;
 
 /// Scoped host fuel sink for the isolated chain adapter. Each VM charge is
@@ -146,6 +148,8 @@ pub struct ValueCall<'a> {
 }
 
 pub struct NativeInvocation {
+    pub read_only: bool,
+    pub raw_result: bool,
     pub target: [u8; 32],
     pub selector: [u8; 32],
     pub value: [u8; 32],
@@ -194,6 +198,9 @@ pub trait ExecutionHost {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExecutionContext {
+    pub read_only: bool,
+    /// Authenticated executing contract, set by the enclosing transactional host.
+    pub contract: [u8; 32],
     pub caller: [u8; 32],
     pub value: [u8; 32],
     pub block_height: u64,
@@ -402,7 +409,9 @@ impl Vm {
             Some(context),
             &mut gas_used,
         )?;
-        *storage = staged;
+        if !context.read_only {
+            *storage = staged;
+        }
         Ok(result)
     }
 
@@ -432,7 +441,9 @@ impl Vm {
                 Some(context),
                 &mut gas_used,
             )?;
-            *storage = staged;
+            if !context.read_only {
+                *storage = staged;
+            }
             Ok(result)
         })();
         match result {
@@ -510,10 +521,7 @@ impl Vm {
                 bail!("argument count mismatch");
             }
             for (ty, value) in function.parameters.iter().zip(arguments) {
-                let actual = match value {
-                    Value::Word(ty, _) => *ty,
-                    Value::String(_) => ValueType::String,
-                };
+                let actual = value.value_type();
                 if *ty != actual {
                     bail!("argument type mismatch");
                 }
@@ -522,10 +530,7 @@ impl Vm {
                 + PARAMETER_GAS * arguments.len() as u64
                 + arguments
                     .iter()
-                    .map(|value| match value {
-                        Value::String(text) => text.len() as u64,
-                        _ => 0,
-                    })
+                    .map(|value| value.byte_len() as u64)
                     .sum::<u64>();
             if gas_limit < initial_cost {
                 charge_external_fuel(gas_limit);
@@ -548,7 +553,9 @@ impl Vm {
                 &mut gas_used,
                 host,
             )?;
-            *storage = staged;
+            if !context.read_only {
+                *storage = staged;
+            }
             Ok(result)
         })();
         match result {
@@ -617,7 +624,7 @@ fn execute_program(
     )?;
     let scalar = |value| match value {
         Value::Word(_, word) => Ok(word),
-        Value::String(_) => Err(anyhow!("dynamic value in scalar execution")),
+        Value::String(_) | Value::Bytes(_) => Err(anyhow!("dynamic value in scalar execution")),
     };
     Ok(ExecutionResult {
         return_type: result.return_type,
@@ -673,6 +680,10 @@ fn execute_dynamic_program(
         if let Some(text) = &value.text {
             if text.len() > MAX_STRING_BYTES {
                 bail!("string exceeds ABI byte limit");
+            }
+        } else if let Some(data) = &value.bytes {
+            if data.len() > MAX_BYTES_LENGTH {
+                bail!("bytes exceeds ABI byte limit");
             }
         } else {
             validate_word(*value_type, &value.word)?;
@@ -782,6 +793,8 @@ fn classify_failure(error: anyhow::Error, gas_used: u64) -> ExecutionFailure {
 }
 
 fn validate_context(context: &ExecutionContext) -> Result<()> {
+    validate_word(ValueType::Address, &context.contract)
+        .map_err(|error| anyhow!("execution contract: {error}"))?;
     validate_word(ValueType::Address, &context.caller)
         .map_err(|error| anyhow!("execution context caller: {error}"))?;
     validate_word(ValueType::U256, &context.value)
@@ -853,14 +866,24 @@ struct StackValue {
     value_type: ValueType,
     word: [u8; 32],
     text: Option<Arc<str>>,
+    bytes: Option<Arc<[u8]>>,
 }
 
 impl StackValue {
+    fn binary(bytes: Arc<[u8]>) -> Self {
+        Self {
+            value_type: ValueType::Bytes,
+            word: [0; 32],
+            text: None,
+            bytes: Some(bytes),
+        }
+    }
     fn scalar(value_type: ValueType, word: [u8; 32]) -> Self {
         Self {
             value_type,
             word,
             text: None,
+            bytes: None,
         }
     }
 
@@ -871,19 +894,28 @@ impl StackValue {
                 value_type: ValueType::String,
                 word: [0; 32],
                 text: Some(Arc::from(text.as_str())),
+                bytes: None,
+            },
+            Value::Bytes(data) => Self {
+                value_type: ValueType::Bytes,
+                word: [0; 32],
+                text: None,
+                bytes: Some(Arc::from(data.as_slice())),
             },
         }
     }
 
     fn into_value(self) -> Value {
-        match self.text {
-            Some(text) => Value::String(text.to_string()),
-            None => Value::Word(self.value_type, self.word),
+        match (self.text, self.bytes) {
+            (Some(text), _) => Value::String(text.to_string()),
+            (_, Some(data)) => Value::Bytes(data.to_vec()),
+            _ => Value::Word(self.value_type, self.word),
         }
     }
 
     fn byte_cost(&self) -> u64 {
         self.text.as_ref().map_or(0, |text| text.len() as u64)
+            + self.bytes.as_ref().map_or(0, |data| data.len() as u64)
     }
 }
 
@@ -949,7 +981,8 @@ fn evaluate_expression(
     let mut stack: Vec<StackValue> = Vec::new();
     for instruction in instructions {
         match instruction {
-            Instruction::Constant(value_type, word) => {
+            Instruction::Constant(value_type, word)
+            | Instruction::CompactConstant(value_type, word) => {
                 stack.push(StackValue::scalar(*value_type, *word))
             }
             Instruction::Parameter(index) => {
@@ -980,6 +1013,7 @@ fn evaluate_expression(
                         value_type: ValueType::String,
                         word: [0; 32],
                         text: Some(text.clone()),
+                        bytes: None,
                     });
                     continue;
                 }
@@ -1074,7 +1108,11 @@ fn evaluate_expression(
                 meter.charge(left.byte_cost().saturating_add(right.byte_cost()))?;
                 stack.push(StackValue::scalar(
                     ValueType::Bool,
-                    word_from_bool(left.word == right.word && left.text == right.text),
+                    word_from_bool(
+                        left.word == right.word
+                            && left.text == right.text
+                            && left.bytes == right.bytes,
+                    ),
                 ));
             }
             Instruction::LtU64 => {
@@ -1105,6 +1143,125 @@ fn evaluate_expression(
                     ValueType::Bool,
                     word_from_bool(left >= right),
                 ));
+            }
+            Instruction::Keccak256 => {
+                let value = stack
+                    .pop()
+                    .ok_or_else(|| anyhow!("expression stack underflow"))?;
+                let data = value
+                    .bytes
+                    .ok_or_else(|| anyhow!("keccak256 requires bytes"))?;
+                // Candidate schedule only. Charge before hashing; the shared fuel
+                // hook sees the same charge as the transaction-local meter.
+                meter.charge(30 + 6 * (data.len() as u64).div_ceil(32))?;
+                stack.push(StackValue::scalar(
+                    ValueType::Bytes32,
+                    Keccak256::digest(data.as_ref()).into(),
+                ));
+            }
+            Instruction::ContractAddress => {
+                let context = environment
+                    .context
+                    .ok_or_else(|| anyhow!("contract identity requires an execution context"))?;
+                if context.contract == [0; 32] {
+                    bail!("missing authenticated contract identity");
+                }
+                stack.push(StackValue::scalar(ValueType::Address, context.contract));
+            }
+            Instruction::BytesLen => {
+                let data = pop_bytes(&mut stack)?;
+                stack.push(StackValue::scalar(
+                    ValueType::U64,
+                    word_from_u64(data.len() as u64),
+                ));
+            }
+            Instruction::BytesConcat => {
+                let right = pop_bytes(&mut stack)?;
+                let left = pop_bytes(&mut stack)?;
+                let length = left
+                    .len()
+                    .checked_add(right.len())
+                    .ok_or_else(|| anyhow!("bytes length overflow"))?;
+                if length > MAX_BYTES_LENGTH {
+                    bail!("bytes exceeds ABI byte limit");
+                }
+                meter.charge(length as u64)?;
+                let mut bytes = Vec::with_capacity(length);
+                bytes.extend_from_slice(&left);
+                bytes.extend_from_slice(&right);
+                stack.push(StackValue::binary(bytes.into()));
+            }
+            Instruction::BytesSlice => {
+                let length = pop_u64(&mut stack)?;
+                let start = pop_u64(&mut stack)?;
+                let data = pop_bytes(&mut stack)?;
+                let end = start
+                    .checked_add(length)
+                    .ok_or_else(|| anyhow!("bytes slice overflow"))?;
+                if end > data.len() as u64 {
+                    bail!("bytes slice out of bounds");
+                }
+                meter.charge(length)?;
+                stack.push(StackValue::binary(Arc::from(
+                    &data[start as usize..end as usize],
+                )));
+            }
+            Instruction::BytesGet => {
+                let index = pop_u64(&mut stack)?;
+                let data = pop_bytes(&mut stack)?;
+                let index =
+                    usize::try_from(index).map_err(|_| anyhow!("bytes index out of bounds"))?;
+                let value = *data
+                    .get(index)
+                    .ok_or_else(|| anyhow!("bytes index out of bounds"))?;
+                stack.push(StackValue::scalar(
+                    ValueType::U64,
+                    word_from_u64(value as u64),
+                ));
+            }
+            Instruction::WordBytes => {
+                let value = pop_value(&mut stack)?;
+                validate_word(value.value_type, &value.word)?;
+                meter.charge(32)?;
+                stack.push(StackValue::binary(Arc::from(value.word.as_slice())));
+            }
+            Instruction::BytesWord => {
+                let data = pop_bytes(&mut stack)?;
+                if data.len() != 32 {
+                    bail!("bytes_word requires exactly 32 bytes");
+                }
+                meter.charge(32)?;
+                stack.push(StackValue::scalar(
+                    ValueType::Bytes32,
+                    data.as_ref().try_into().unwrap(),
+                ));
+            }
+            Instruction::WordAddress | Instruction::WordU64 | Instruction::WordU256 => {
+                let value = pop_value(&mut stack)?;
+                if value.value_type != ValueType::Bytes32 {
+                    bail!("word conversion requires bytes32");
+                }
+                let ty = match instruction {
+                    Instruction::WordAddress => ValueType::Address,
+                    Instruction::WordU64 => ValueType::U64,
+                    _ => ValueType::U256,
+                };
+                validate_word(ty, &value.word)?;
+                stack.push(StackValue::scalar(ty, value.word));
+            }
+            Instruction::Secp256k1Verify => {
+                let signer = pop_value(&mut stack)?;
+                let signature = pop_bytes(&mut stack)?;
+                let digest = pop_value(&mut stack)?;
+                if signer.value_type != ValueType::Address
+                    || digest.value_type != ValueType::Bytes32
+                {
+                    bail!("invalid secp256k1 operand types");
+                }
+                // Local candidate price; debit the live fuel sink before crypto.
+                meter.charge(3000)?;
+                let valid = crypto::verify_secp256k1(&digest.word, &signature, &signer.word);
+                stack.push(StackValue::scalar(ValueType::Bool, word_from_bool(valid)));
             }
         }
     }
@@ -1226,7 +1383,90 @@ fn execute_block(
 ) -> Result<Option<StackValue>> {
     for statement in statements {
         meter.charge(INSTRUCTION_GAS)?;
+        if environment.context.is_some_and(|c| c.read_only)
+            && matches!(
+                statement,
+                Statement::Create { .. }
+                    | Statement::Store { .. }
+                    | Statement::MapStore { .. }
+                    | Statement::Emit { .. }
+                    | Statement::Transfer { .. }
+                    | Statement::Call { .. }
+            )
+        {
+            return Err(ClassifiedFault::new(
+                FailureKind::Trap,
+                "stateful effect in read-only execution",
+            )
+            .into());
+        }
         match statement {
+            Statement::PayloadInvoke {
+                read_only,
+                target,
+                value,
+                payload,
+            } => {
+                meter.charge(CONTRACT_CALL_GAS)?;
+                let mut operands = Vec::new();
+                for expression in [target, value, payload] {
+                    meter.charge(expression_gas(expression))?;
+                    operands.push(evaluate_expression(
+                        expression,
+                        arguments,
+                        parameter_types,
+                        locals,
+                        environment,
+                        meter,
+                    )?);
+                }
+                let payload = operands[2]
+                    .bytes
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("payload call requires bytes"))?;
+                if payload.len() < 39 {
+                    bail!("native payload requires full selector and canonical LVAL arguments");
+                }
+                meter.charge(payload.len() as u64)?;
+                let values = values::decode(&payload[32..])?;
+                let read_only = *read_only || environment.context.is_some_and(|c| c.read_only);
+                if read_only && operands[1].word != [0; 32] {
+                    bail!("read-only call cannot transfer value");
+                }
+                let request = NativeInvocation {
+                    target: operands[0].word,
+                    selector: payload[..32].try_into().unwrap(),
+                    value: operands[1].word,
+                    arguments: values,
+                    return_type: ValueType::Bytes,
+                    gas_limit: meter.limit - meter.used,
+                    read_only,
+                    raw_result: true,
+                };
+                let host = environment
+                    .host
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("payload call requires an execution host"))?;
+                let returned = match host.invoke(request, environment.storage) {
+                    Ok(result) => {
+                        meter.account_child(result.gas_used)?;
+                        result
+                    }
+                    Err(failure) => {
+                        meter.account_child(failure.gas_used)?;
+                        return Err(ClassifiedFault::new(failure.kind, failure.message).into());
+                    }
+                };
+                let values = [returned.value];
+                let size = values::encoded_size(&values)?;
+                if size > MAX_BYTES_LENGTH {
+                    bail!("payload result exceeds binary value limit");
+                }
+                meter.charge(size as u64)?;
+                let encoded = values::encode(&values)?;
+                environment.remaining_balance = returned.caller_balance;
+                locals.push(StackValue::binary(encoded.into()));
+            }
             Statement::Create {
                 template,
                 salt,
@@ -1339,6 +1579,8 @@ fn execute_block(
                 }
                 values::encoded_size(&values)?;
                 let request = NativeInvocation {
+                    read_only: environment.context.is_some_and(|c| c.read_only),
+                    raw_result: false,
                     target: operands[0].word,
                     selector: operands[1].word,
                     value: operands[2].word,
@@ -1361,9 +1603,7 @@ fn execute_block(
                     }
                 };
                 values::encoded_size(std::slice::from_ref(&returned.value))?;
-                if let Value::String(text) = &returned.value {
-                    meter.charge(text.len() as u64)?;
-                }
+                meter.charge(returned.value.byte_len() as u64)?;
                 let returned_value = StackValue::from_value(&returned.value);
                 if returned_value.value_type != *return_type {
                     bail!("invoke return type mismatch");
@@ -1575,7 +1815,7 @@ fn execute_block(
                     if value.value_type != field.value_type {
                         bail!("event field runtime type mismatch");
                     }
-                    if value.text.is_some() {
+                    if value.text.is_some() || value.bytes.is_some() {
                         event_bytes += 3 + value.byte_cost() as usize;
                     } else {
                         event_bytes += 33;
@@ -1761,6 +2001,18 @@ fn pop_u64_pair(stack: &mut Vec<StackValue>) -> Result<(u64, u64)> {
     let right = pop_u64(stack)?;
     let left = pop_u64(stack)?;
     Ok((left, right))
+}
+
+fn pop_value(stack: &mut Vec<StackValue>) -> Result<StackValue> {
+    stack
+        .pop()
+        .ok_or_else(|| anyhow!("expression stack underflow"))
+}
+
+fn pop_bytes(stack: &mut Vec<StackValue>) -> Result<Arc<[u8]>> {
+    pop_value(stack)?
+        .bytes
+        .ok_or_else(|| anyhow!("expression operand is not bytes"))
 }
 
 fn pop_u64(stack: &mut Vec<StackValue>) -> Result<u64> {

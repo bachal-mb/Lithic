@@ -16,6 +16,7 @@ use std::{
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WRITES: usize = 128;
+mod record;
 type ReadFn = unsafe extern "C" fn(usize, *const u8, usize, *mut u8, usize) -> isize;
 type ChargeFn = unsafe extern "C" fn(usize, u64) -> i32;
 #[repr(C)]
@@ -232,23 +233,20 @@ impl StateTransaction for Transaction<'_> {
             None => self.parent.read(&key)?,
         };
         let Some(bytes) = bytes else { return Ok(None) };
-        let record: Stored = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        if record.version != 2 {
-            return Err("unsupported contract record; explicit migration required".into());
-        }
-        let code = decode(&record.bytecode)?;
+        let record = record::decode_record(&bytes)?;
+        let code = record.bytecode;
         if code.len() > MAX_CHILD_CODE_BYTES {
             return Err("code exceeds harness limit".into());
         }
         let hash = code_hash(&code);
-        if hex(&hash) != record.code_hash {
+        if hash != record.code_hash {
             return Err("stored code hash mismatch".into());
         }
         let program = parse(&code).map_err(|e| e.to_string())?;
-        let mut storage = Storage::from_persisted_bytes(&decode(&record.storage)?, &program)
-            .map_err(|e| e.to_string())?;
+        let mut storage =
+            Storage::from_persisted_bytes(&record.storage, &program).map_err(|e| e.to_string())?;
         if !storage.staged_map_entries().is_empty() {
-            return Err("v2 contract record contains inline map entries".into());
+            return Err("contract record contains inline map entries".into());
         }
         storage.attach_map_reader(Rc::new(CallbackMapReader {
             read: self.parent.read,
@@ -275,16 +273,7 @@ impl StateTransaction for Transaction<'_> {
         address: Address,
         contract: DeployedContract,
     ) -> Result<(), String> {
-        let bytes = serde_json::to_vec(&Stored {
-            version: 2,
-            bytecode: hex(&contract.bytecode),
-            code_hash: hex(&contract.code_hash),
-            storage: hex(&contract
-                .storage
-                .to_persisted_scalar_bytes()
-                .map_err(|e| e.to_string())?),
-        })
-        .map_err(|e| e.to_string())?;
+        let bytes = record::encode_record(&contract)?;
         let mut proposed = self.writes.clone();
         proposed.insert(key(&address), bytes);
         let mut map_updates = BTreeMap::new();
@@ -601,9 +590,12 @@ pub unsafe extern "C" fn lithovm_free_v1(buffer: Buffer) {
 }
 
 #[cfg(test)]
+mod deployment_budget_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    fn state() -> CallbackState {
+    pub(super) fn state() -> CallbackState {
         CallbackState {
             read: absent,
             context: 0,
@@ -706,6 +698,100 @@ mod tests {
     }
     unsafe extern "C" fn absent(_: usize, _: *const u8, _: usize, _: *mut u8, _: usize) -> isize {
         -1
+    }
+    #[test]
+    fn binary_values_cross_c_abi_and_reload_persisted_hash_state() {
+        struct Context {
+            records: BTreeMap<String, Vec<u8>>,
+            fuel: u64,
+        }
+        unsafe extern "C" fn read(
+            ctx: usize,
+            key: *const u8,
+            key_len: usize,
+            out: *mut u8,
+            capacity: usize,
+        ) -> isize {
+            let ctx = &*(ctx as *const Context);
+            let key = std::str::from_utf8(std::slice::from_raw_parts(key, key_len)).unwrap();
+            let Some(value) = ctx.records.get(key) else {
+                return -1;
+            };
+            if capacity < value.len() {
+                return value.len() as isize;
+            }
+            std::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
+            value.len() as isize
+        }
+        unsafe extern "C" fn charge(ctx: usize, amount: u64) -> i32 {
+            let ctx = &mut *(ctx as *mut Context);
+            ctx.fuel += amount;
+            1
+        }
+        fn invoke(ctx: &mut Context, request: Json) -> Json {
+            let input = serde_json::to_vec(&request).unwrap();
+            let mut output = Buffer {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            let status = unsafe {
+                lithovm_execute_v2(
+                    input.as_ptr(),
+                    input.len(),
+                    ctx as *mut Context as usize,
+                    Some(read),
+                    Some(charge),
+                    &mut output,
+                )
+            };
+            assert_eq!(status, 0);
+            let result = serde_json::from_slice(unsafe {
+                std::slice::from_raw_parts(output.data, output.len)
+            })
+            .unwrap();
+            unsafe { lithovm_free_v1(output) };
+            result
+        }
+        let artifact = lithic_lithovm::compile("contract Hash { state { digest: bytes32; } event Hashed { data: bytes } pub fn initialize(data: bytes) -> bytes32 { self.digest = keccak256(data); emit Hashed { data: data }; return self.digest; } pub fn digest() -> bytes32 { return self.digest; } }").unwrap();
+        let mut ctx = Context {
+            records: BTreeMap::new(),
+            fuel: 0,
+        };
+        let args = values::encode(&[Value::Bytes(b"abc".to_vec())]).unwrap();
+        let deploy = json!({"version":1,"operation":"deploy","caller":"0x0000000000000000000000000000000000000009","bytecode":artifact.bytecode,"function":"initialize","arguments":hex(&args),"nonce":1,"gas_limit":100000,"chain_id":700777,"block_height":1,"block_timestamp":2});
+        let result = invoke(&mut ctx, deploy.clone());
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(ctx.fuel.to_string(), result["gasUsed"]);
+        assert_eq!(
+            values::decode(&decode(result["events"][0]["values"].as_str().unwrap()).unwrap())
+                .unwrap(),
+            [Value::Bytes(b"abc".to_vec())]
+        );
+        let contract = result["deployments"][0]["contract"].as_str().unwrap();
+        for write in result["writes"].as_array().unwrap() {
+            ctx.records.insert(
+                write["key"].as_str().unwrap().into(),
+                decode(write["value"].as_str().unwrap()).unwrap(),
+            );
+        }
+        let call = json!({"version":1,"operation":"call","caller":"0x0000000000000000000000000000000000000009","contract":contract,"function":"digest","arguments":"0x4c56414c010000","nonce":2,"gas_limit":100000,"chain_id":700777,"block_height":2,"block_timestamp":3});
+        let readback = invoke(&mut ctx, call);
+        assert_eq!(readback["success"], true, "{readback}");
+        let digest: [u8; 32] =
+            hex::decode("4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        assert_eq!(
+            values::decode(&decode(readback["result"].as_str().unwrap()).unwrap()).unwrap(),
+            [Value::Word(lithovm_bytecode::ValueType::Bytes32, digest)]
+        );
+        let mut low = deploy;
+        low["gas_limit"] = json!(1);
+        let failure = invoke(&mut ctx, low);
+        assert_eq!(failure["success"], false);
+        assert_eq!(failure["writes"], json!([]));
+        assert_eq!(failure["events"], json!([]));
     }
     #[test]
     fn c_abi_rejects_bad_buffers_and_releases_success_output() {

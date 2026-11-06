@@ -39,6 +39,25 @@ The packaged `lithdev` prepares native deployment/call intents from the same
 source and artifact; see [its usage and boundaries](LITHDEV_NATIVE_PREPARATION.md).
 This smoke never registers a chain service, signs a transaction or uses LAX.
 
+New development packages declare smoke profile `native-account-v17-v1`.
+In addition to the legacy check, the packaged compiler compiles the proposed
+native account and the packaged FFI initializes it, reloads its binary record
+and signer map, rejects unauthorized/repeated initialization, checks OOG and
+recovery, and rejects a corrupt stored code hash. A separately compiled fixture
+verifies a valid public signature and rejects a modified digest. The package
+includes only the public digest/signature/address, bound to the unchanged
+proposed vector-file hash; no private-key fields are copied. The source worker
+rebuilds the actual v17 account and rejects modified code, while `lithdev`
+rejects preparing that account for the documented Makalu v14 profile.
+
+The manifest records the smoke profile and requires its fixtures. Historical
+archives without this field retain their legacy validation rules. Running
+`smoke --directory <extracted-package> --target <native-target>` selects the
+manifest's profile automatically; a contradictory `--profile` is rejected.
+This is package execution evidence for a proposed development profile, not
+standards certification, chain integration or benchmark acceptance. Reported
+initialization VM gas excludes keeper KV/growth/log and outer transaction costs.
+
 The archive includes deterministic metadata, a complete file/hash manifest,
 source inventory, Cargo lockfile, CycloneDX 1.5 dependency graph, build comparison
 and smoke evidence. The SBOM describes Cargo's resolved workspace graph,
@@ -72,6 +91,8 @@ than be waived by the packaging script.
 
 The separate `release-checks.yml` workflow runs native Linux, Windows and macOS
 rebuild comparisons and packaged execution checks for compiler/runtime PRs.
+The Apple Silicon build host is `macos-15`; GitHub retired the `macos-14`
+Actions images on 2 November 2026 ([runner-image notice](https://github.com/actions/runner-images)).
 It retains unsigned candidates with their embedded source/build/smoke evidence.
 PR builds check out the selected head commit directly, rather than a synthetic
 CI merge. The review packet must include that exact build commit and its tree
