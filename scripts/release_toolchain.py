@@ -22,12 +22,34 @@ import zipfile
 
 TOOLS = ('lithc', 'lithverify', 'lithdev', 'lithfmt', 'lithlint')
 ROOT = Path(__file__).resolve().parents[1]
+BUILD_PROFILE_POLICY = 'cargo-target-release-v1'
+RELEASE_COMPONENTS = {
+    **{name: 'packages/compiler/lithc/Cargo.toml' for name in ('lithc', 'lithverify', 'lithdev')},
+    **{name: f'packages/compiler/{name}/Cargo.toml' for name in ('lithfmt', 'lithlint')},
+    **{name.replace('-', '_'): f'packages/compiler/{name}/Cargo.toml'
+       for name in ('lithic-syntax', 'lithic-evm', 'lithic-lithovm')},
+    **{name.replace('-', '_'): f'packages/vm/{directory}/Cargo.toml' for name, directory in (
+        ('lithovm', 'lithovm'), ('lithovm-ffi', 'lithovm-ffi'), ('lithovm-host', 'lithovm-host'),
+        ('lithovm-bytecode', 'bytecode'), ('lithovm-receipts', 'receipts'),
+        ('lithovm-zk-verifier', 'zk-verifier'))},
+}
 SMOKE = b'''contract ReleaseSmoke {
     pub fn answer() -> u64 { return 42; }
 }
 '''
 LEGACY_SMOKE_PROFILE = 'native-v11-v1'
 ACCOUNT_SMOKE_PROFILE = 'native-account-v17-v1'
+CUSTODY_SMOKE_PROFILE = 'native-account-v17-bank-candidate-v1'
+CUSTODY_SOURCE = 'smoke/native-custody.lithic'
+CUSTODY_SMOKE = b'''contract BankSmoke {
+    state { owner: address; sent: u256; }
+    pub fn initialize(owner: address) -> bool { self.owner = owner; return true; }
+    pub fn pay(to: address, amount: u256, accept: bool) -> bool {
+        require(msg.sender == self.owner); transfer_native(to, amount);
+        self.sent = self.sent + amount; require(accept); return true;
+    }
+}
+'''
 ACCOUNT_SOURCE = 'sdk/contracts/standards/lep10015_native_account_candidate.lithic'
 SIGNATURE_SOURCE = 'smoke/signature.lithic'
 SIGNATURE_VECTOR = 'smoke/signature-vector.json'
@@ -43,7 +65,8 @@ SIGNATURE_SMOKE = b'''contract ReleaseSignatureSmoke {
 DOCS = ('README.md', 'LICENSE', 'docs/IMPLEMENTATION_STATUS.md',
         'docs/RELEASE_PROCESS.md', 'docs/LEP100_15_IMPLEMENTATION_DECISIONS.md',
         'docs/LTH_R3_RATIFICATION_2026_10_01.md', 'docs/PRODUCTION_COMPLETION_2026_10_25.md',
-        'docs/LITHDEV_NATIVE_PREPARATION.md', 'docs/LITHOVM_DYNAMIC_VALUES_V1.md')
+        'docs/LITHDEV_NATIVE_PREPARATION.md', 'docs/LITHOVM_DYNAMIC_VALUES_V1.md',
+        'docs/NATIVE_CUSTODY_CANDIDATE.md')
 
 
 def sha(raw):
@@ -62,6 +85,7 @@ def account_smoke_inputs(source):
     signature = vector['signatures'][0]
     # Public test material only. Do not ship the fixture's private-key fields.
     return {ACCOUNT_SOURCE: source[ACCOUNT_SOURCE], SIGNATURE_SOURCE: SIGNATURE_SMOKE,
+            CUSTODY_SOURCE: CUSTODY_SMOKE,
             SIGNATURE_VECTOR: canonical({'source_vectors_sha256': VECTORS_SHA256,
                 'digest': vector['digest'], 'signature': signature['signature'],
                 'address': signature['address']})}
@@ -145,6 +169,87 @@ def native_library_link_args(target):
         # its stable runtime name at link time, preserving the ad-hoc signature.
         return ['-C', 'link-arg=-Wl,-install_name,@rpath/liblithovm_ffi.dylib']
     return []
+
+
+def validate_profiles(profiles, required=RELEASE_COMPONENTS):
+    """Validate Cargo's effective settings, not the requested profile name."""
+    if not isinstance(profiles, list) or not profiles:
+        raise ValueError('missing Cargo release profiles')
+    seen, components = set(), set()
+    for row in profiles:
+        if not isinstance(row, dict) or set(row) != {'package', 'target', 'kind', 'profile'}:
+            raise ValueError('invalid Cargo release profile record')
+        package, name, kind, profile = (row[k] for k in ('package', 'target', 'kind', 'profile'))
+        if not isinstance(package, str) or not isinstance(name, str) or not isinstance(kind, list) or \
+                not kind or any(not isinstance(k, str) for k in kind):
+            raise ValueError('invalid Cargo release profile identity')
+        key = (package, name, tuple(kind))
+        if key in seen:
+            raise ValueError('duplicate Cargo release profile')
+        seen.add(key)
+        if not isinstance(profile, dict) or profile.get('opt_level') != '3' or \
+                profile.get('debug_assertions') is not False or profile.get('test') is not False or \
+                type(profile.get('overflow_checks')) is not bool:
+            raise ValueError('non-production Cargo release profile: ' + name)
+        if name in required and package == 'workspace:' + required[name]:
+            expected = 'bin' if name in TOOLS else 'cdylib' if name == 'lithovm_ffi' else 'lib'
+            if expected not in kind:
+                raise ValueError('incorrect Cargo release profile target kind: ' + name)
+            components.add(name)
+    if components != set(required):
+        raise ValueError('missing Cargo release profile components: ' + ', '.join(sorted(set(required) - components)))
+
+
+def cargo_profiles(raw, root, target, required=RELEASE_COMPONENTS):
+    # Cargo reports host build scripts/proc macros separately from target
+    # artifacts. They may legitimately use the unoptimized build-override.
+    # https://doc.rust-lang.org/cargo/reference/external-tools.html#artifact-messages
+    # Cargo canonicalizes manifest paths; temp roots can use /var aliases or
+    # Windows short/junction paths. Compare both sides in the same namespace.
+    root = root.resolve()
+    destination = (root / 'target' / target / 'release').resolve()
+    profiles, finished = [], []
+    for line in raw.splitlines():
+        if not line.startswith(b'{'):
+            continue  # Cargo cannot control arbitrary build-tool stdout.
+        message = json.loads(line)
+        if message.get('reason') == 'build-finished':
+            finished.append(message.get('success'))
+        if message.get('reason') != 'compiler-artifact' or not any(
+                Path(name).resolve().is_relative_to(destination) for name in message['filenames']):
+            continue
+        manifest = Path(message['manifest_path']).resolve()
+        package = ('workspace:' + manifest.relative_to(root).as_posix()
+                   if manifest.is_relative_to(root) else message['package_id'])
+        if package.startswith('path+'):
+            raise ValueError('Cargo release profile has an external path dependency')
+        profiles.append({'package': package, 'target': message['target']['name'],
+                         'kind': sorted(message['target']['kind']), 'profile': message['profile']})
+    if finished != [True]:
+        raise ValueError('Cargo release profile stream did not finish successfully')
+    profiles.sort(key=lambda row: (row['package'], row['target'], row['kind']))
+    validate_profiles(profiles, required)
+    return profiles
+
+
+def build_release_profiles(argv, root, env, target, required=RELEASE_COMPONENTS):
+    raw = run([*argv, '--message-format=json'], cwd=root, env=env)
+    return cargo_profiles(raw, root, target, required)
+
+
+def verify_build_profiles(evidence, target):
+    if evidence.get('build_profile_policy') != BUILD_PROFILE_POLICY:
+        raise ValueError('unsupported Cargo release profile policy')
+    builds = evidence.get('cargo_profiles')
+    if not isinstance(builds, list) or len(builds) != 2 or builds[0] != builds[1]:
+        raise ValueError('independent Cargo release profiles differ or are missing')
+    stages = {'build', 'native_library_relink'} if native_library_link_args(target) else {'build'}
+    for build in builds:
+        if not isinstance(build, dict) or set(build) != stages:
+            raise ValueError('missing Cargo release profile build stage')
+        validate_profiles(build['build'])
+        if 'native_library_relink' in stages:
+            validate_profiles(build['native_library_relink'], {'lithovm_ffi': RELEASE_COMPONENTS['lithovm_ffi']})
 
 
 def sbom(metadata, lock):
@@ -267,12 +372,20 @@ def verify_archive(raw):
         'include/lithovm.h', 'sbom.cdx.json', 'Cargo.lock', 'source-manifest.json',
         'build-evidence.json', 'smoke-evidence.json'}
     profile = manifest.get('smoke_profile', LEGACY_SMOKE_PROFILE)
-    if profile == ACCOUNT_SMOKE_PROFILE:
+    if profile in (ACCOUNT_SMOKE_PROFILE, CUSTODY_SMOKE_PROFILE):
         required.update((ACCOUNT_SOURCE, SIGNATURE_SOURCE, SIGNATURE_VECTOR))
+        if profile == CUSTODY_SMOKE_PROFILE:
+            required.add(CUSTODY_SOURCE)
     elif profile != LEGACY_SMOKE_PROFILE:
         raise ValueError('unsupported release smoke profile')
     if not required <= set(files):
         raise ValueError('release is missing a required compiler/runtime artifact')
+    # Historical archives predate this evidence contract and retain their
+    # original validation rules. Newly declared profiles cannot omit it.
+    if 'build_profile_policy' in manifest:
+        if manifest['build_profile_policy'] != BUILD_PROFILE_POLICY:
+            raise ValueError('unsupported Cargo release profile policy')
+        verify_build_profiles(json.loads(files['build-evidence.json']), manifest['target'])
     return manifest
 
 
@@ -283,7 +396,7 @@ def smoke(package_dir, names, profile=None):
     if declared is not None and profile is not None and declared != profile:
         raise ValueError('requested smoke profile contradicts the package')
     profile = profile or declared or LEGACY_SMOKE_PROFILE
-    if profile not in (LEGACY_SMOKE_PROFILE, ACCOUNT_SMOKE_PROFILE):
+    if profile not in (LEGACY_SMOKE_PROFILE, ACCOUNT_SMOKE_PROFILE, CUSTODY_SMOKE_PROFILE):
         raise ValueError('unsupported release smoke profile')
     compiler = package_dir / names['lithc.exe' if os.name == 'nt' else 'lithc']
     source = package_dir / 'release-smoke.lithic'
@@ -394,10 +507,89 @@ def smoke(package_dir, names, profile=None):
             'source_verifier': 'PASS', 'modified_code_rejected': 'PASS',
             'source_hash': artifact['sourceHash'], 'code_hash': verified['rebuiltCodeHash'],
             'scope': 'local packaged native library; no chain registration or deployment'}
-    if profile == ACCOUNT_SMOKE_PROFILE:
+    if profile in (ACCOUNT_SMOKE_PROFILE, CUSTODY_SMOKE_PROFILE):
         evidence['native_account_v17'] = account_smoke(package_dir, compiler, verifier,
                                                      dev, invoke, state, charges)
+    if profile == CUSTODY_SMOKE_PROFILE:
+        evidence['native_custody_candidate'] = custody_smoke(
+            package_dir, compiler, library, Buffer, read_type, charge_type, read, charge, state)
     return evidence
+
+
+def custody_smoke(package, compiler, library, buffer_type, read_type, charge_type, read, charge, state):
+    """Exercise the actual packaged v3 library; v1/v2 smoke stays unchanged."""
+    bank, callback_errors = {}, []
+    balance_type = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p)
+    @balance_type
+    def balance(_, address, output):
+        try:
+            value = bank.get('0x' + ctypes.string_at(address, 20).hex(), 0)
+            ctypes.memmove(output, value.to_bytes(32, 'big'), 32)
+            return 1
+        except Exception:
+            callback_errors.append('balance callback failed')
+            return 0
+    execute = library.lithovm_execute_v3
+    execute.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, read_type,
+                       balance_type, charge_type, ctypes.POINTER(buffer_type)]
+    execute.restype = ctypes.c_int32
+    def invoke(value):
+        raw = canonical(value)
+        output = buffer_type()
+        status = execute(raw, len(raw), 0, read, balance, charge, ctypes.byref(output))
+        try:
+            if status or callback_errors or not output.data or output.len > 2 * 1024 * 1024:
+                raise ValueError('packaged custody ABI failed')
+            result = json.loads(ctypes.string_at(output.data, output.len))
+            if result.get('bankVersion') != 1 or not isinstance(result.get('balances'), list):
+                raise ValueError('packaged custody response schema mismatch')
+            return result
+        finally:
+            library.lithovm_free_v1(output)
+    def arguments(*items):
+        return '0x' + (b'LVAL\x01' + len(items).to_bytes(2, 'big') +
+            b''.join(bytes([tag]) + value.to_bytes(32, 'big') for tag, value in items)).hex()
+    artifact = json.loads(run([str(compiler), '--emit', 'lithovm', str(package / CUSTODY_SOURCE)], cwd=package))
+    owner, recipient = '0x' + '11' * 20, '0x' + '22' * 20
+    request = {'version': 2, 'operation': 'deploy', 'caller': owner, 'bytecode': artifact['bytecode'],
+        'function': 'initialize', 'arguments': arguments((4, int(owner, 16))), 'nonce': 3,
+        'gas_limit': 10_000_000, 'chain_id': 700780, 'block_height': 1, 'block_timestamp': 1}
+    preview = invoke(request)
+    if not preview['success']:
+        raise ValueError('packaged custody prediction failed')
+    address = preview['deployments'][0]['contract']
+    bank[address] = 100
+    deployed = invoke(request)
+    if not deployed['success'] or deployed['balances'] or bank[address] != 100:
+        raise ValueError('packaged custody lost prefunding')
+    for update in deployed['writes']:
+        state[update['key']] = bytes.fromhex(update['value'][2:])
+    call = {k: v for k, v in request.items() if k != 'bytecode'}
+    call.update(operation='call', contract=address, function='pay')
+    for fault in ('revert', 'unauthorized', 'insufficient', 'oog'):
+        rejected = invoke({**call,
+            'caller': recipient if fault == 'unauthorized' else owner,
+            'gas_limit': 1 if fault == 'oog' else 10_000_000,
+            'arguments': arguments((4, int(recipient, 16)), (2, 101 if fault == 'insufficient' else 7),
+                                   (3, int(fault != 'revert')))})
+        if rejected['success'] or any(rejected[n] for n in ('writes', 'events', 'deployments', 'balances')):
+            raise ValueError('packaged custody failure leaked effects: ' + fault)
+    result = invoke({**call, 'arguments': arguments((4, int(recipient, 16)), (2, 7), (3, 1))})
+    if not result['success'] or len(result['balances']) != 2 or bank != {address: 100}:
+        raise ValueError('packaged custody applied external balances or omitted settlement')
+    changes = result['balances']
+    if sum(int(c['before'], 16) for c in changes) != sum(int(c['after'], 16) for c in changes):
+        raise ValueError('packaged custody did not conserve supply')
+    for c in changes:
+        if bank.get(c['address'], 0) != int(c['before'], 16):
+            raise ValueError('packaged custody original balance mismatch')
+    for c in changes:
+        bank[c['address']] = int(c['after'], 16)
+    if bank != {address: 93, recipient: 7}:
+        raise ValueError('packaged custody settlement mismatch')
+    return {'ffi_v3': 'PASS', 'prefunding': 'PASS', 'balanced_staged_settlement': 'PASS',
+        'revert_unauthorized_insufficient_oog_no_effects': 'PASS',
+        'scope': 'local packaged-library candidate only; no external bank, chain or custody approval'}
 
 
 def account_smoke(package, compiler, verifier, dev, invoke, state, charges):
@@ -564,7 +756,7 @@ def build(args):
     if args.target != host:
         raise ValueError('release smoke must run on its native target host')
     names = artifact_names(args.target)
-    builds, roots = [], []
+    builds, roots, build_profiles = [], [], []
     with tempfile.TemporaryDirectory(prefix='lithic-release-') as directory:
         temporary = Path(directory)
         for index in range(2):
@@ -581,20 +773,28 @@ def build(args):
             env.update(SOURCE_DATE_EPOCH=str(epoch), CARGO_INCREMENTAL='0',
                        CARGO_ENCODED_RUSTFLAGS=release_rustflags(args.target, root))
             flags = ['--offline'] if args.offline else []
-            run(['cargo', '+' + toolchain, 'build', '--release', '--locked', *flags,
+            profiles = {'build': build_release_profiles([
+                 'cargo', '+' + toolchain, 'build', '--release', '--locked', *flags,
                  '--target', args.target, '--target-dir', str(root / 'target'),
-                 '-p', 'lithc', '-p', 'lithfmt', '-p', 'lithlint', '-p', 'lithovm-ffi'], cwd=root, env=env)
+                 '-p', 'lithc', '-p', 'lithfmt', '-p', 'lithlint', '-p', 'lithovm-ffi'], root, env, args.target)}
             library_args = native_library_link_args(args.target)
             if library_args:
-                run(['cargo', '+' + toolchain, 'rustc', '--release', '--locked', *flags,
+                # Keep Cargo options before rustc's `--` boundary.
+                raw = run(['cargo', '+' + toolchain, 'rustc', '--release', '--locked', *flags,
+                     '--message-format=json',
                      '--target', args.target, '--target-dir', str(root / 'target'),
                      '-p', 'lithovm-ffi', '--lib', '--', *library_args], cwd=root, env=env)
+                profiles['native_library_relink'] = cargo_profiles(raw, root, args.target,
+                    {'lithovm_ffi': RELEASE_COMPONENTS['lithovm_ffi']})
+            build_profiles.append(profiles)
             binaries = {dest: (root / 'target' / args.target / 'release' / name).read_bytes()
                         for name, dest in names.items()}
             builds.append(binaries)
             if index == 0:
                 metadata = json.loads(run(['cargo', '+' + toolchain, 'metadata', '--locked',
                     '--format-version', '1', '--filter-platform', args.target, *flags], cwd=root, env=env))
+        verify_build_profiles({'build_profile_policy': BUILD_PROFILE_POLICY,
+                               'cargo_profiles': build_profiles}, args.target)
         if builds[0] != builds[1]:
             preserve_rebuild_failure(builds, roots, output, args.target, commit)
             changed = [name for name in builds[0] if builds[0][name] != builds[1][name]]
@@ -615,7 +815,7 @@ def build(args):
         # A separate process releases the loaded DLL before Windows cleanup.
         smoke_result = json.loads(run([sys.executable, str(Path(__file__).resolve()),
             'smoke', '--directory', str(package), '--target', args.target,
-            '--profile', ACCOUNT_SMOKE_PROFILE], cwd=package))
+            '--profile', CUSTODY_SMOKE_PROFILE], cwd=package))
     # Never substitute a snapshot if the user edited sources while builds ran.
     if source_snapshot(ROOT, allow_dirty=bool(status)) != source:
         raise ValueError('source changed during build; candidate not emitted')
@@ -632,9 +832,10 @@ def build(args):
                  'source_input_policy': 'working-tree-local-v1' if status else 'raw-git-blobs-v1',
                  'source_inventory_sha256': sha(canonical(source_manifest)), 'source_date_epoch': epoch,
                  'rustc': rustc, 'target': args.target, 'independent_builds': 2,
+                 'build_profile_policy': BUILD_PROFILE_POLICY, 'cargo_profiles': build_profiles,
                  'windows_reproducible_link': args.target.endswith('windows-msvc'),
                  'native_library_link_args': native_library_link_args(args.target),
-                 'smoke_profile': ACCOUNT_SMOKE_PROFILE,
+                 'smoke_profile': CUSTODY_SMOKE_PROFILE,
                  'binary_hashes_equal': True, 'binary_sha256': {n: sha(raw) for n, raw in builds[0].items()},
                  'reproducibility_scope': 'same toolchain/host dependencies; distinct source and build roots',
                  'signed': False, 'production_approved': False})}
@@ -642,7 +843,8 @@ def build(args):
         if name in source:
             files['docs/' + PurePosixPath(name).name] = source[name]
     files['manifest.json'] = canonical({'schema_version': 1, 'version': args.version,
-        'target': args.target, 'smoke_profile': ACCOUNT_SMOKE_PROFILE,
+        'build_profile_policy': BUILD_PROFILE_POLICY,
+        'target': args.target, 'smoke_profile': CUSTODY_SMOKE_PROFILE,
         'files': {n: {'bytes': len(raw), 'sha256': sha(raw)}
                                       for n, raw in sorted(files.items())}})
     raw = archive_bytes(files, epoch, windows='windows' in args.target)
@@ -670,7 +872,7 @@ def main():
     command = sub.add_parser('smoke')
     command.add_argument('--directory', required=True)
     command.add_argument('--target', required=True)
-    command.add_argument('--profile', choices=(LEGACY_SMOKE_PROFILE, ACCOUNT_SMOKE_PROFILE))
+    command.add_argument('--profile', choices=(LEGACY_SMOKE_PROFILE, ACCOUNT_SMOKE_PROFILE, CUSTODY_SMOKE_PROFILE))
     args = parser.parse_args()
     if args.command == 'build':
         build(args)

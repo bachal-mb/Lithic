@@ -6,6 +6,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location('release_toolchain', Path(__file__).parents[1] / 'release_toolchain.py')
 release = importlib.util.module_from_spec(spec)
@@ -13,6 +14,119 @@ spec.loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
+    def cargo_messages(self, root, target='x86_64-unknown-linux-gnu'):
+        rows = []
+        for name, manifest in release.RELEASE_COMPONENTS.items():
+            kind = ['cdylib', 'rlib'] if name == 'lithovm_ffi' else ['bin'] if name in release.TOOLS else ['lib']
+            rows.append({'reason': 'compiler-artifact', 'package_id': 'path+file://' + str(root / manifest),
+                         'manifest_path': str(root / manifest),
+                         'target': {'name': name, 'kind': kind},
+                         'profile': {'opt_level': '3', 'debuginfo': 0, 'debug_assertions': False,
+                                     'overflow_checks': False, 'test': False},
+                         'filenames': [str(root / 'target' / target / 'release' / 'deps' / name)]})
+        rows.append({'reason': 'build-finished', 'success': True})
+        return rows
+
+    def cargo_bytes(self, rows):
+        return b'\n'.join(json.dumps(row).encode() for row in rows)
+
+    def test_effective_profiles_reject_debug_overrides_and_missing_components(self):
+        root = Path('/build').resolve()
+        for mutation in ('unoptimized-ffi', 'unoptimized-vm', 'debug', 'test', 'missing', 'host-only', 'duplicate', 'unfinished'):
+            rows = self.cargo_messages(root)
+            ffi = next(row for row in rows if row.get('target', {}).get('name') == 'lithovm_ffi')
+            if mutation.startswith('unoptimized'):
+                victim = ffi if mutation == 'unoptimized-ffi' else next(r for r in rows if r.get('target', {}).get('name') == 'lithovm')
+                victim['profile']['opt_level'] = '0'
+            elif mutation in ('debug', 'test'):
+                ffi['profile']['debug_assertions' if mutation == 'debug' else 'test'] = True
+            elif mutation == 'missing':
+                rows.remove(ffi)
+            elif mutation == 'host-only':
+                ffi['filenames'] = [str(root / 'target/release/liblithovm_ffi.so')]
+            elif mutation == 'duplicate':
+                rows.insert(0, ffi)
+            else:
+                rows.pop()
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, 'Cargo|release profile'):
+                release.cargo_profiles(self.cargo_bytes(rows), root, 'x86_64-unknown-linux-gnu')
+
+    def test_profiles_cover_target_dependencies_and_ignore_host_build_tools(self):
+        root = Path('/build').resolve()
+        rows = self.cargo_messages(root)
+        dependency = {'reason': 'compiler-artifact', 'package_id': 'registry+https://example.invalid#dependency@1.0',
+                      'manifest_path': str(root.parent / 'registry/dependency/Cargo.toml'),
+                      'target': {'name': 'dependency', 'kind': ['lib']},
+                      'profile': dict(rows[0]['profile']),
+                      'filenames': [str(root / 'target/x86_64-unknown-linux-gnu/release/deps/libdependency.rlib')]}
+        rows.insert(0, dependency)
+        host = dict(dependency, target={'name': 'build_script_build', 'kind': ['custom-build']},
+                    profile=dict(dependency['profile'], opt_level='0', debug_assertions=True),
+                    filenames=[str(root / 'target/release/build/dependency/build-script-build')])
+        rows.insert(0, host)
+        profiles = release.cargo_profiles(self.cargo_bytes(rows), root, 'x86_64-unknown-linux-gnu')
+        self.assertEqual(len(profiles), len(release.RELEASE_COMPONENTS) + 1)
+        self.assertNotIn(str(root), json.dumps(profiles))
+        dependency['profile']['opt_level'] = '0'
+        with self.assertRaisesRegex(ValueError, 'release profile'):
+            release.cargo_profiles(self.cargo_bytes(rows), root, 'x86_64-unknown-linux-gnu')
+
+    def test_build_command_checks_effective_profiles_before_payloads(self):
+        root = Path('/build').resolve()
+        rows = self.cargo_messages(root)
+        rows[0]['profile']['opt_level'] = '0'
+        with mock.patch.object(release, 'run', return_value=self.cargo_bytes(rows)) as command:
+            with self.assertRaisesRegex(ValueError, 'release profile'):
+                release.build_release_profiles(['cargo', '+1.96.0', 'build', '--release'], root, {},
+                                               'x86_64-unknown-linux-gnu')
+        self.assertIn('--message-format=json', command.call_args.args[0])
+
+    def test_cargo_canonical_paths_match_aliased_temporary_build_root(self):
+        root = Path('/build').resolve()
+        messages = self.cargo_bytes(self.cargo_messages(root))
+        self.assertEqual(release.cargo_profiles(messages, root / 'alias' / '..', 'x86_64-unknown-linux-gnu'),
+                         release.cargo_profiles(messages, root, 'x86_64-unknown-linux-gnu'))
+
+    def test_new_archive_policy_requires_matching_profiles_and_macos_relink(self):
+        root = Path('/build').resolve()
+        for target in ('x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc', 'aarch64-apple-darwin'):
+            profiles = release.cargo_profiles(self.cargo_bytes(self.cargo_messages(root, target)), root, target)
+            stages = {'build': profiles}
+            if 'apple' in target:
+                stages['native_library_relink'] = [p for p in profiles if p['target'] == 'lithovm_ffi']
+            evidence = {'build_profile_policy': release.BUILD_PROFILE_POLICY, 'cargo_profiles': [stages, stages]}
+            release.verify_build_profiles(evidence, target)
+            for mutation in ('none', 'one-build', 'mismatch', 'unoptimized', 'unknown-policy', 'missing-stage', 'valid'):
+                files = self.files(target, release.CUSTODY_SMOKE_PROFILE)
+                current = json.loads(json.dumps(evidence))
+                if mutation == 'none':
+                    current.pop('cargo_profiles')
+                elif mutation == 'one-build':
+                    current['cargo_profiles'].pop()
+                elif mutation == 'mismatch':
+                    current['cargo_profiles'][1]['build'][0]['profile']['overflow_checks'] = True
+                elif mutation == 'unoptimized':
+                    for build in current['cargo_profiles']:
+                        build['build'][0]['profile']['opt_level'] = '0'
+                elif mutation == 'unknown-policy':
+                    current['build_profile_policy'] = 'unknown'
+                elif mutation == 'missing-stage':
+                    for build in current['cargo_profiles']:
+                        build.pop('native_library_relink' if 'apple' in target else 'build')
+                files['build-evidence.json'] = release.canonical(current)
+                manifest = json.loads(files['manifest.json'])
+                manifest['build_profile_policy'] = release.BUILD_PROFILE_POLICY
+                manifest['files']['build-evidence.json'] = {
+                    'sha256': release.sha(files['build-evidence.json']), 'bytes': len(files['build-evidence.json'])}
+                files['manifest.json'] = release.canonical(manifest)
+                raw = release.archive_bytes(files, 1700000000, windows='windows' in target)
+                with self.subTest(target=target, mutation=mutation):
+                    if mutation == 'valid':
+                        release.verify_archive(raw)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'Cargo release profile'):
+                            release.verify_archive(raw)
+
     def source_repo(self, directory):
         root = Path(directory).resolve() / 'source'
         root.mkdir()
@@ -95,9 +209,11 @@ class ReleaseTests(unittest.TestCase):
             'include/lithovm.h', 'sbom.cdx.json', 'Cargo.lock', 'source-manifest.json',
             'build-evidence.json', 'smoke-evidence.json'}
         files = {n: n.encode() for n in names}
-        if profile == release.ACCOUNT_SMOKE_PROFILE:
+        if profile in (release.ACCOUNT_SMOKE_PROFILE, release.CUSTODY_SMOKE_PROFILE):
             for name in (release.ACCOUNT_SOURCE, release.SIGNATURE_SOURCE, release.SIGNATURE_VECTOR):
                 files[name] = name.encode()
+            if profile == release.CUSTODY_SMOKE_PROFILE:
+                files[release.CUSTODY_SOURCE] = release.CUSTODY_SMOKE
         files['manifest.json'] = release.canonical({'schema_version': 1, 'version': 'lithic-vtest',
             'target': target, 'smoke_profile': profile,
             'files': {n: {'sha256': release.sha(raw), 'bytes': len(raw)}
@@ -113,6 +229,15 @@ class ReleaseTests(unittest.TestCase):
             files['manifest.json'] = release.canonical(manifest)
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'required'):
                 release.verify_archive(release.archive_bytes(files, 1700000000))
+
+    def test_custody_profile_requires_its_actual_smoke_source(self):
+        files = self.files('x86_64-unknown-linux-gnu', release.CUSTODY_SMOKE_PROFILE)
+        del files[release.CUSTODY_SOURCE]
+        manifest = json.loads(files['manifest.json'])
+        del manifest['files'][release.CUSTODY_SOURCE]
+        files['manifest.json'] = release.canonical(manifest)
+        with self.assertRaisesRegex(ValueError, 'required'):
+            release.verify_archive(release.archive_bytes(files, 1700000000))
 
     def test_smoke_profiles_are_explicit_and_old_archives_still_verify(self):
         files = self.files('x86_64-unknown-linux-gnu')
@@ -147,7 +272,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_archive_deterministic_and_complete_for_all_release_targets(self):
         for target in ('x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc'):
-            for profile in (release.LEGACY_SMOKE_PROFILE, release.ACCOUNT_SMOKE_PROFILE):
+            for profile in (release.LEGACY_SMOKE_PROFILE, release.ACCOUNT_SMOKE_PROFILE, release.CUSTODY_SMOKE_PROFILE):
                 with self.subTest(target=target, profile=profile):
                     files = self.files(target, profile)
                     first = release.archive_bytes(files, 1700000000, windows='windows' in target)

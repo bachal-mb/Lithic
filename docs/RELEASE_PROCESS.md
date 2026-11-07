@@ -31,6 +31,19 @@ the exact source commit, tree and policy. Dirty local candidates are labelled
 The script builds twice in independent source/target directories with path
 remapping and a source-commit timestamp. It compares all six executable/library
 payloads byte-for-byte and fails without emitting an archive on any difference.
+New packages declare build policy `cargo-target-release-v1`. For both builds,
+the packager checks Cargo's actual `compiler-artifact` profiles: all target
+artifacts must have optimization level 3, debug assertions disabled and test mode
+disabled. Every compiler/tool and native-runtime component must be present;
+target dependencies are checked too. Host build scripts and procedural macros
+are excluded from this target policy. The macOS final FFI relink is checked
+separately. The normalized profiles, including overflow-check settings, are
+recorded in `build-evidence.json` and must match between independent builds.
+An environment or Cargo configuration override that makes a target artifact
+unoptimized fails before packaging, even when `--release` was requested.
+Historical archives without this build-policy field retain their old checks;
+they do not acquire optimization evidence retroactively.
+
 It then runs the packaged compiler and native FFI v2 together: compile a small
 contract, deploy into callback-backed local state, call and verify the result,
 check live fuel callbacks and reject an invalid call without durable effects.
@@ -39,7 +52,7 @@ The packaged `lithdev` prepares native deployment/call intents from the same
 source and artifact; see [its usage and boundaries](LITHDEV_NATIVE_PREPARATION.md).
 This smoke never registers a chain service, signs a transaction or uses LAX.
 
-New development packages declare smoke profile `native-account-v17-v1`.
+New development packages declare smoke profile `native-account-v17-bank-candidate-v1`.
 In addition to the legacy check, the packaged compiler compiles the proposed
 native account and the packaged FFI initializes it, reloads its binary record
 and signer map, rejects unauthorized/repeated initialization, checks OOG and
@@ -49,6 +62,14 @@ includes only the public digest/signature/address, bound to the unchanged
 proposed vector-file hash; no private-key fields are copied. The source worker
 rebuilds the actual v17 account and rejects modified code, while `lithdev`
 rejects preparing that account for the documented Makalu v14 profile.
+
+The new profile also compiles a custody fixture and exercises the packaged FFI
+v3: preserve prefunding, reject unauthorized/reverting/insufficient/OOG calls
+without effects, and return a supply-conserving bank settlement without applying
+external balances. This is a separately disabled
+[custody candidate](NATIVE_CUSTODY_CANDIDATE.md), not approval to replace the
+first nonpayable chain profile. Historical `native-account-v17-v1` archives keep
+their explicit v2-only smoke behavior.
 
 The manifest records the smoke profile and requires its fixtures. Historical
 archives without this field retain their legacy validation rules. Running
